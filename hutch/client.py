@@ -236,6 +236,12 @@ class HutchClient:
         return await self._call("parallel_goto", {
             "names": names, "url": url, "wait_until": wait_until})
 
+    async def diff_responses(self, session_a, session_b, *,
+                              url_pattern=None, ignore_noise=True):
+        return await self._call("diff_responses", {
+            "session_a": session_a, "session_b": session_b,
+            "url_pattern": url_pattern, "ignore_noise": ignore_noise})
+
     async def compare(self, names, url, *, wait_until="load"):
         return await self._call("compare", {
             "names": names, "url": url, "wait_until": wait_until})

@@ -183,6 +183,7 @@ class HutchDaemon:
             "alerts": self._rpc_alerts,
             "parallel_goto": self._rpc_parallel_goto,
             "compare": self._rpc_compare,
+            "diff_responses": self._rpc_diff_responses,
             "pause": self._rpc_pause,
             "resume": self._rpc_resume,
             "handoff": self._rpc_handoff,
@@ -459,6 +460,15 @@ class HutchDaemon:
         url = params["url"]
         return await self.pool.compare(
             names, url, wait_until=params.get("wait_until", "load"))
+
+    async def _rpc_diff_responses(self, params):
+        name_a = params["session_a"]
+        name_b = params["session_b"]
+        diffs = await self.pool.diff_responses(
+            name_a, name_b,
+            url_pattern=params.get("url_pattern"),
+            ignore_noise=params.get("ignore_noise", True))
+        return [asdict(d) for d in diffs]
 
     async def _rpc_pause(self, params):
         name = params["name"]

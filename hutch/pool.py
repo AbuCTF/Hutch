@@ -1,10 +1,12 @@
 import asyncio
 import os
 import shutil
+from dataclasses import asdict
 from typing import Optional
 
 from playwright.async_api import async_playwright
 
+from .differ import diff_responses
 from .session import Fingerprint, ProxyConfig, Session
 
 
@@ -152,6 +154,18 @@ class Pool:
                 "network": network,
             }
         return comparison
+
+    async def diff_responses(self, name_a, name_b, *,
+                              url_pattern=None, ignore_noise=True):
+        sa = await self.get(name_a)
+        sb = await self.get(name_b)
+        if not sa.context or not sb.context:
+            raise RuntimeError("both sessions need context capture enabled")
+        entries_a = sa.context.network.all()
+        entries_b = sb.context.network.all()
+        return diff_responses(
+            entries_a, entries_b, name_a, name_b,
+            url_pattern=url_pattern, ignore_noise=ignore_noise)
 
     def list(self, *, alive_only=False, tag=None):
         sessions = list(self._sessions.values())
