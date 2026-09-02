@@ -1,0 +1,81 @@
+@startuml architecture
+!theme mars
+skinparam backgroundColor #1a1a2e
+skinparam defaultFontColor #eaeaea
+skinparam ArrowColor #4fc3f7
+skinparam ComponentBackgroundColor #16213e
+skinparam ComponentBorderColor #4fc3f7
+skinparam DatabaseBackgroundColor #0f3460
+skinparam DatabaseBorderColor #e94560
+skinparam NodeBackgroundColor #1a1a2e
+skinparam NodeBorderColor #4fc3f7
+skinparam PackageBackgroundColor #16213e
+skinparam PackageBorderColor #4fc3f7
+skinparam NoteBackgroundColor #533483
+skinparam NoteBorderColor #e94560
+skinparam CloudBackgroundColor #0f3460
+skinparam CloudBorderColor #4fc3f7
+
+actor "User / Harness" as user #4fc3f7
+
+node "Pool — single async_playwright() · <color:#e94560>zero leakage between sessions</color>" as pool {
+
+    package "Session A" as sa #16213e {
+        component "**~/.hutch/profiles/a/**\ncookies · localStorage · cache · IndexedDB\n\n**Win / 1920x1080** · America/New_York · en-US\nproxy: **direct** · stealth ✓ · webrtc ✓" as sa_card
+    }
+
+    package "Session B" as sb #16213e {
+        component "**~/.hutch/profiles/b/**\ncookies · localStorage · cache · IndexedDB\n\n**Mac / 1440x900 @2x** · America/Los_Angeles · en-US\nproxy: **Caido :8081** · stealth ✓ · webrtc ✓" as sb_card #e94560
+    }
+
+    package "Session C" as sc #16213e {
+        component "**~/.hutch/profiles/c/**\ncookies · localStorage · cache · IndexedDB\n\n**Linux / 1920x1080** · Asia/Kolkata · en-IN\nproxy: **socks5://...** · stealth ✓ · webrtc ✓" as sc_card
+    }
+
+    package "Session N" as sn #0f3460 {
+        component "...\nmax_sessions configurable" as sn_card
+    }
+}
+
+component "**Caido SDK**\noptional per-session" as caido #533483
+cloud "Internet" as internet #0f3460
+
+' force left-to-right order
+sa -[hidden]right-> sb
+sb -[hidden]right-> sc
+sc -[hidden]right-> sn
+
+' user connects to middle session to center the actor
+user -down-> sb_card : create / auth / open
+
+sa -down-> internet : direct
+sb -down-> caido
+caido -down-> internet : proxy
+sc -down-> internet : socks5
+
+note bottom of pool
+  **Isolation guarantees**
+  - separate user_data_dir per session
+  - no shared cookies / storage / cache
+  - independent fingerprint per session
+  - per-session proxy configuration
+  - WebRTC IP leak prevention
+end note
+
+note right of caido
+  **@caido/sdk-client**
+  request interception
+  replay engine
+end note
+
+legend right
+  |= Component |= Technology |
+  | Pool | Playwright |
+  | Session | Persistent Context |
+  | Stealth | playwright-stealth |
+  | Fingerprint | sha256(program) seed |
+  | Proxy | Caido / SOCKS5 / direct |
+  | CLI | argparse |
+endlegend
+
+@enduml

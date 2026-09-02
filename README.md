@@ -1,14 +1,12 @@
-# Hutch
-
 isolated playwright session orchestrator.
 
 multiple browser sessions, persistent state, per-session proxy, coherent fingerprints, zero leakage.
 
-## Architecture
+### Architecture
 
 ![architecture](docs/architecture.png)
 
-## Install
+### Install
 
 ```bash
 pip install playwright
@@ -22,9 +20,9 @@ pip install -e .
 pip install playwright-stealth
 ```
 
-## Usage
+### Usage
 
-### CLI
+#### CLI
 
 ```bash
 hutch create my-target --preset win-desktop-1080p
@@ -38,7 +36,7 @@ hutch destroy my-target
 hutch presets
 ```
 
-### Python
+#### Python
 
 ```python
 from hutch import Pool, generate, generate_for_program
@@ -62,7 +60,7 @@ async with Pool() as pool:
     page = await s.new_page()
 ```
 
-### Multi-session isolation
+#### Multi-session isolation
 
 ```python
 async with Pool() as pool:
@@ -71,7 +69,7 @@ async with Pool() as pool:
     # separate cookies, proxy, fingerprint per session
 ```
 
-## Fingerprint presets
+### Fingerprint presets
 
 | Preset | Viewport | Platform |
 |--------|----------|----------|
@@ -83,7 +81,7 @@ async with Pool() as pool:
 
 each preset bundles a matching UA, platform, screen, locale, and timezone.
 
-## Stealth
+### Stealth
 
 with `playwright-stealth` installed:
 - `navigator.webdriver` → false
@@ -94,6 +92,6 @@ with `playwright-stealth` installed:
 
 not covered (chromium limitation): TLS fingerprint (JA3/JA4), HTTP/2 settings fingerprint.
 
-## License
+### License
 
-MIT
+`MIT`
