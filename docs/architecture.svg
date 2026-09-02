@@ -1,102 +1,181 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="monospace" font-size="13">
-  <defs>
-    <linearGradient id="poolGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1a1a2e"/>
-      <stop offset="100%" stop-color="#16213e"/>
-    </linearGradient>
-    <linearGradient id="sessionGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0f3460"/>
-      <stop offset="100%" stop-color="#1a1a2e"/>
-    </linearGradient>
-    <linearGradient id="proxyGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#533483"/>
-      <stop offset="100%" stop-color="#0f3460"/>
-    </linearGradient>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13">
+  <rect width="1000" height="700" fill="#0f0f23"/>
 
-  <rect width="900" height="520" rx="12" fill="#0d1117"/>
+  <!-- title -->
+  <text x="500" y="30" text-anchor="middle" fill="#ffffff" font-size="18" font-weight="bold">Hutch</text>
+  <text x="500" y="48" text-anchor="middle" fill="#8b8fa3" font-size="12">Architecture</text>
 
-  <text x="450" y="35" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="bold">Hutch</text>
-  <text x="450" y="52" text-anchor="middle" fill="#7d8590" font-size="11">isolated playwright session orchestrator</text>
+  <!-- user icon -->
+  <circle cx="500" cy="75" r="5" fill="#00d4ff"/>
+  <text x="500" y="95" text-anchor="middle" fill="#8b8fa3" font-size="11">User / Harness</text>
 
-  <!-- Pool box -->
-  <rect x="30" y="70" width="840" height="80" rx="8" fill="url(#poolGrad)" stroke="#30363d" stroke-width="1.5"/>
-  <text x="50" y="95" fill="#58a6ff" font-size="14" font-weight="bold">Pool</text>
-  <text x="50" y="115" fill="#7d8590" font-size="11">single async_playwright() instance</text>
-  <text x="50" y="132" fill="#7d8590" font-size="11">concurrency limits  ·  session discovery on restart  ·  lifecycle management</text>
+  <!-- dashed line from user to pool -->
+  <line x1="500" y1="100" x2="500" y2="120" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
 
-  <!-- connector lines from pool to sessions -->
-  <line x1="140" y1="150" x2="140" y2="180" stroke="#30363d" stroke-width="1.5"/>
-  <line x1="365" y1="150" x2="365" y2="180" stroke="#30363d" stroke-width="1.5"/>
-  <line x1="590" y1="150" x2="590" y2="180" stroke="#30363d" stroke-width="1.5"/>
-  <line x1="780" y1="150" x2="780" y2="180" stroke="#30363d" stroke-width="1.5"/>
+  <!-- Pool container -->
+  <rect x="40" y="120" width="920" height="90" rx="4" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
+  <rect x="40" y="120" width="920" height="22" rx="4" fill="#00d4ff" fill-opacity="0.08"/>
+  <circle cx="950" cy="130" r="3" fill="#00d4ff" opacity="0.8"/>
+  <text x="55" y="136" fill="#00d4ff" font-size="13" font-weight="bold">Pool</text>
+  <text x="55" y="165" fill="#c8cad0" font-size="12">single async_playwright() instance</text>
+  <text x="55" y="183" fill="#8b8fa3" font-size="11">concurrency limits · session discovery on restart · lifecycle management</text>
+  <text x="880" y="165" fill="#8b8fa3" font-size="11" text-anchor="end">max_sessions: 5</text>
+
+  <!-- connection lines pool to sessions -->
+  <line x1="155" y1="210" x2="155" y2="245" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="390" y1="210" x2="390" y2="245" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="625" y1="210" x2="625" y2="245" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="845" y1="210" x2="845" y2="245" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.3"/>
 
   <!-- Session A -->
-  <rect x="40" y="180" width="200" height="200" rx="8" fill="url(#sessionGrad)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="60" y="205" fill="#58a6ff" font-size="13" font-weight="bold">Session A</text>
-  <text x="60" y="225" fill="#7d8590" font-size="10">~/.hutch/profiles/a/</text>
-  <line x1="55" y1="235" x2="225" y2="235" stroke="#21262d" stroke-width="1"/>
-  <text x="60" y="255" fill="#c9d1d9" font-size="11">cookies    ✓</text>
-  <text x="60" y="272" fill="#c9d1d9" font-size="11">storage    ✓</text>
-  <text x="60" y="289" fill="#c9d1d9" font-size="11">cache      ✓</text>
-  <line x1="55" y1="298" x2="225" y2="298" stroke="#21262d" stroke-width="1"/>
-  <text x="60" y="318" fill="#a5d6ff" font-size="10">fp: Win / 1080p</text>
-  <text x="60" y="335" fill="#a5d6ff" font-size="10">tz: America/New_York</text>
-  <text x="60" y="352" fill="#d2a8ff" font-size="10">proxy: direct</text>
-  <text x="60" y="369" fill="#7ee787" font-size="10">stealth: on</text>
+  <rect x="45" y="245" width="220" height="270" rx="4" fill="none" stroke="#00d4ff" stroke-width="1" stroke-dasharray="6,3"/>
+  <rect x="45" y="245" width="220" height="22" rx="4" fill="#00d4ff" fill-opacity="0.08"/>
+  <circle cx="255" cy="255" r="3" fill="#00d4ff" opacity="0.8"/>
+  <text x="60" y="261" fill="#00d4ff" font-size="12" font-weight="bold">Session A</text>
+
+  <text x="60" y="288" fill="#8b8fa3" font-size="10">~/.hutch/profiles/a/</text>
+  <line x1="55" y1="296" x2="255" y2="296" stroke="#1e1e3a" stroke-width="1"/>
+
+  <text x="60" y="316" fill="#c8cad0" font-size="11">cookies</text>
+  <text x="200" y="316" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="60" y="334" fill="#c8cad0" font-size="11">localStorage</text>
+  <text x="200" y="334" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="60" y="352" fill="#c8cad0" font-size="11">cache</text>
+  <text x="200" y="352" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="60" y="370" fill="#c8cad0" font-size="11">IndexedDB</text>
+  <text x="200" y="370" fill="#4ecdc4" font-size="11">✓</text>
+
+  <line x1="55" y1="380" x2="255" y2="380" stroke="#1e1e3a" stroke-width="1"/>
+
+  <!-- fingerprint box inside session A -->
+  <rect x="55" y="388" width="200" height="60" rx="3" fill="#1a1a3e" stroke="#3d3d6b" stroke-width="0.5"/>
+  <text x="65" y="405" fill="#a78bfa" font-size="10">fingerprint</text>
+  <text x="65" y="420" fill="#c8cad0" font-size="10">Win / 1920x1080</text>
+  <text x="65" y="435" fill="#8b8fa3" font-size="10">America/New_York · en-US</text>
+
+  <!-- proxy label session A -->
+  <text x="60" y="468" fill="#8b8fa3" font-size="10">proxy</text>
+  <text x="110" y="468" fill="#c8cad0" font-size="10">direct</text>
+
+  <!-- stealth indicator -->
+  <rect x="55" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="82" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">stealth</text>
+  <rect x="118" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="145" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">webrtc</text>
 
   <!-- Session B -->
-  <rect x="265" y="180" width="200" height="200" rx="8" fill="url(#sessionGrad)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="285" y="205" fill="#58a6ff" font-size="13" font-weight="bold">Session B</text>
-  <text x="285" y="225" fill="#7d8590" font-size="10">~/.hutch/profiles/b/</text>
-  <line x1="280" y1="235" x2="450" y2="235" stroke="#21262d" stroke-width="1"/>
-  <text x="285" y="255" fill="#c9d1d9" font-size="11">cookies    ✓</text>
-  <text x="285" y="272" fill="#c9d1d9" font-size="11">storage    ✓</text>
-  <text x="285" y="289" fill="#c9d1d9" font-size="11">cache      ✓</text>
-  <line x1="280" y1="298" x2="450" y2="298" stroke="#21262d" stroke-width="1"/>
-  <text x="285" y="318" fill="#a5d6ff" font-size="10">fp: Mac / Retina</text>
-  <text x="285" y="335" fill="#a5d6ff" font-size="10">tz: America/Los_Angeles</text>
-  <text x="285" y="352" fill="#d2a8ff" font-size="10">proxy: Caido :8081</text>
-  <text x="285" y="369" fill="#7ee787" font-size="10">stealth: on</text>
+  <rect x="280" y="245" width="220" height="270" rx="4" fill="none" stroke="#00d4ff" stroke-width="1" stroke-dasharray="6,3"/>
+  <rect x="280" y="245" width="220" height="22" rx="4" fill="#00d4ff" fill-opacity="0.08"/>
+  <circle cx="490" cy="255" r="3" fill="#00d4ff" opacity="0.8"/>
+  <text x="295" y="261" fill="#00d4ff" font-size="12" font-weight="bold">Session B</text>
+
+  <text x="295" y="288" fill="#8b8fa3" font-size="10">~/.hutch/profiles/b/</text>
+  <line x1="290" y1="296" x2="490" y2="296" stroke="#1e1e3a" stroke-width="1"/>
+
+  <text x="295" y="316" fill="#c8cad0" font-size="11">cookies</text>
+  <text x="435" y="316" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="295" y="334" fill="#c8cad0" font-size="11">localStorage</text>
+  <text x="435" y="334" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="295" y="352" fill="#c8cad0" font-size="11">cache</text>
+  <text x="435" y="352" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="295" y="370" fill="#c8cad0" font-size="11">IndexedDB</text>
+  <text x="435" y="370" fill="#4ecdc4" font-size="11">✓</text>
+
+  <line x1="290" y1="380" x2="490" y2="380" stroke="#1e1e3a" stroke-width="1"/>
+
+  <rect x="290" y="388" width="200" height="60" rx="3" fill="#1a1a3e" stroke="#3d3d6b" stroke-width="0.5"/>
+  <text x="300" y="405" fill="#a78bfa" font-size="10">fingerprint</text>
+  <text x="300" y="420" fill="#c8cad0" font-size="10">Mac / 1440x900 @2x</text>
+  <text x="300" y="435" fill="#8b8fa3" font-size="10">America/Los_Angeles · en-US</text>
+
+  <text x="295" y="468" fill="#8b8fa3" font-size="10">proxy</text>
+  <!-- Caido proxy - pink accent like Zero style -->
+  <rect x="330" y="456" width="130" height="18" rx="3" fill="#e84393" fill-opacity="0.15" stroke="#e84393" stroke-width="0.5"/>
+  <text x="395" y="469" text-anchor="middle" fill="#e84393" font-size="10">Caido :8081</text>
+
+  <rect x="290" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="317" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">stealth</text>
+  <rect x="353" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="380" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">webrtc</text>
 
   <!-- Session C -->
-  <rect x="490" y="180" width="200" height="200" rx="8" fill="url(#sessionGrad)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="510" y="205" fill="#58a6ff" font-size="13" font-weight="bold">Session C</text>
-  <text x="510" y="225" fill="#7d8590" font-size="10">~/.hutch/profiles/c/</text>
-  <line x1="505" y1="235" x2="675" y2="235" stroke="#21262d" stroke-width="1"/>
-  <text x="510" y="255" fill="#c9d1d9" font-size="11">cookies    ✓</text>
-  <text x="510" y="272" fill="#c9d1d9" font-size="11">storage    ✓</text>
-  <text x="510" y="289" fill="#c9d1d9" font-size="11">cache      ✓</text>
-  <line x1="505" y1="298" x2="675" y2="298" stroke="#21262d" stroke-width="1"/>
-  <text x="510" y="318" fill="#a5d6ff" font-size="10">fp: Linux / 1080p</text>
-  <text x="510" y="335" fill="#a5d6ff" font-size="10">tz: Asia/Kolkata</text>
-  <text x="510" y="352" fill="#d2a8ff" font-size="10">proxy: socks5://...</text>
-  <text x="510" y="369" fill="#7ee787" font-size="10">stealth: on</text>
+  <rect x="515" y="245" width="220" height="270" rx="4" fill="none" stroke="#00d4ff" stroke-width="1" stroke-dasharray="6,3"/>
+  <rect x="515" y="245" width="220" height="22" rx="4" fill="#00d4ff" fill-opacity="0.08"/>
+  <circle cx="725" cy="255" r="3" fill="#00d4ff" opacity="0.8"/>
+  <text x="530" y="261" fill="#00d4ff" font-size="12" font-weight="bold">Session C</text>
 
-  <!-- Session N -->
-  <rect x="715" y="180" width="140" height="200" rx="8" fill="url(#sessionGrad)" stroke="#30363d" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="735" y="205" fill="#7d8590" font-size="13" font-weight="bold">...</text>
-  <text x="735" y="255" fill="#7d8590" font-size="11">Session N</text>
-  <text x="735" y="275" fill="#7d8590" font-size="10">max_sessions</text>
-  <text x="735" y="295" fill="#7d8590" font-size="10">configurable</text>
+  <text x="530" y="288" fill="#8b8fa3" font-size="10">~/.hutch/profiles/c/</text>
+  <line x1="525" y1="296" x2="725" y2="296" stroke="#1e1e3a" stroke-width="1"/>
 
-  <!-- Caido box (optional, under session B) -->
-  <rect x="295" y="400" width="140" height="40" rx="6" fill="url(#proxyGrad)" stroke="#d2a8ff" stroke-width="1"/>
-  <text x="365" y="425" text-anchor="middle" fill="#d2a8ff" font-size="11">Caido SDK</text>
-  <line x1="365" y1="380" x2="365" y2="400" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="530" y="316" fill="#c8cad0" font-size="11">cookies</text>
+  <text x="670" y="316" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="530" y="334" fill="#c8cad0" font-size="11">localStorage</text>
+  <text x="670" y="334" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="530" y="352" fill="#c8cad0" font-size="11">cache</text>
+  <text x="670" y="352" fill="#4ecdc4" font-size="11">✓</text>
+  <text x="530" y="370" fill="#c8cad0" font-size="11">IndexedDB</text>
+  <text x="670" y="370" fill="#4ecdc4" font-size="11">✓</text>
+
+  <line x1="525" y1="380" x2="725" y2="380" stroke="#1e1e3a" stroke-width="1"/>
+
+  <rect x="525" y="388" width="200" height="60" rx="3" fill="#1a1a3e" stroke="#3d3d6b" stroke-width="0.5"/>
+  <text x="535" y="405" fill="#a78bfa" font-size="10">fingerprint</text>
+  <text x="535" y="420" fill="#c8cad0" font-size="10">Linux / 1920x1080</text>
+  <text x="535" y="435" fill="#8b8fa3" font-size="10">Asia/Kolkata · en-IN</text>
+
+  <text x="530" y="468" fill="#8b8fa3" font-size="10">proxy</text>
+  <rect x="565" y="456" width="130" height="18" rx="3" fill="#a78bfa" fill-opacity="0.15" stroke="#a78bfa" stroke-width="0.5"/>
+  <text x="630" y="469" text-anchor="middle" fill="#a78bfa" font-size="10">socks5://...</text>
+
+  <rect x="525" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="552" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">stealth</text>
+  <rect x="588" y="478" width="55" height="18" rx="9" fill="#4ecdc4" fill-opacity="0.15"/>
+  <text x="615" y="491" text-anchor="middle" fill="#4ecdc4" font-size="9">webrtc</text>
+
+  <!-- Session N (dimmed) -->
+  <rect x="750" y="245" width="195" height="270" rx="4" fill="none" stroke="#3d3d6b" stroke-width="1" stroke-dasharray="6,3"/>
+  <rect x="750" y="245" width="195" height="22" rx="4" fill="#3d3d6b" fill-opacity="0.08"/>
+  <circle cx="935" cy="255" r="3" fill="#3d3d6b" opacity="0.5"/>
+  <text x="765" y="261" fill="#3d3d6b" font-size="12" font-weight="bold">Session N</text>
+  <text x="847" y="370" text-anchor="middle" fill="#3d3d6b" font-size="24">···</text>
+  <text x="847" y="400" text-anchor="middle" fill="#3d3d6b" font-size="10">configurable</text>
+
+  <!-- Caido SDK box (pink accent) -->
+  <rect x="335" y="545" width="130" height="40" rx="4" fill="#e84393" fill-opacity="0.12" stroke="#e84393" stroke-width="1"/>
+  <circle cx="455" cy="555" r="3" fill="#e84393" opacity="0.8"/>
+  <text x="400" y="560" text-anchor="middle" fill="#e84393" font-size="11" font-weight="bold">Caido SDK</text>
+  <text x="400" y="575" text-anchor="middle" fill="#8b8fa3" font-size="9">optional per-session</text>
+
+  <!-- dashed lines sessions to internet -->
+  <line x1="155" y1="515" x2="155" y2="630" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.3"/>
+  <line x1="390" y1="515" x2="390" y2="545" stroke="#e84393" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="400" y1="585" x2="400" y2="630" stroke="#e84393" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <line x1="625" y1="515" x2="625" y2="630" stroke="#00d4ff" stroke-width="1" stroke-dasharray="4,3" opacity="0.3"/>
 
   <!-- Internet bar -->
-  <rect x="30" y="465" width="840" height="35" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-  <text x="450" y="488" text-anchor="middle" fill="#7d8590" font-size="12">internet</text>
+  <rect x="40" y="630" width="920" height="35" rx="4" fill="none" stroke="#3d3d6b" stroke-width="1"/>
+  <text x="500" y="652" text-anchor="middle" fill="#8b8fa3" font-size="12">Internet</text>
 
-  <!-- Session to internet lines -->
-  <line x1="140" y1="380" x2="140" y2="465" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
-  <line x1="365" y1="440" x2="365" y2="465" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3,3"/>
-  <line x1="590" y1="380" x2="590" y2="465" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
+  <!-- Component table -->
+  <rect x="760" y="545" width="195" height="85" rx="3" fill="#1a1a3e" stroke="#3d3d6b" stroke-width="0.5"/>
+  <text x="770" y="562" fill="#c8cad0" font-size="10" font-weight="bold">Component</text>
+  <text x="870" y="562" fill="#c8cad0" font-size="10" font-weight="bold">Tech</text>
+  <line x1="765" y1="568" x2="948" y2="568" stroke="#3d3d6b" stroke-width="0.5"/>
+  <text x="770" y="582" fill="#8b8fa3" font-size="9">Pool</text>
+  <text x="870" y="582" fill="#c8cad0" font-size="9">Playwright</text>
+  <text x="770" y="596" fill="#8b8fa3" font-size="9">Session</text>
+  <text x="870" y="596" fill="#c8cad0" font-size="9">Persistent Context</text>
+  <text x="770" y="610" fill="#8b8fa3" font-size="9">Stealth</text>
+  <text x="870" y="610" fill="#c8cad0" font-size="9">playwright-stealth</text>
+  <text x="770" y="624" fill="#8b8fa3" font-size="9">Proxy</text>
+  <text x="870" y="624" fill="#c8cad0" font-size="9">Caido / SOCKS5</text>
 
-  <!-- zero leakage label -->
-  <rect x="180" y="295" width="85" height="20" rx="3" fill="#1f6feb" opacity="0.15"/>
-  <text x="222" y="309" text-anchor="middle" fill="#58a6ff" font-size="9">zero leakage</text>
-  <rect x="405" y="295" width="85" height="20" rx="3" fill="#1f6feb" opacity="0.15"/>
-  <text x="447" y="309" text-anchor="middle" fill="#58a6ff" font-size="9">zero leakage</text>
+  <!-- zero leakage labels between sessions -->
+  <rect x="215" y="360" width="68" height="16" rx="8" fill="#e84393" fill-opacity="0.12"/>
+  <text x="249" y="372" text-anchor="middle" fill="#e84393" font-size="8">zero leakage</text>
+  <rect x="450" y="360" width="68" height="16" rx="8" fill="#e84393" fill-opacity="0.12"/>
+  <text x="484" y="372" text-anchor="middle" fill="#e84393" font-size="8">zero leakage</text>
+
+  <!-- flow label -->
+  <text x="520" y="108" fill="#8b8fa3" font-size="9">create / auth / open</text>
 </svg>
