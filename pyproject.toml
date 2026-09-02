@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "hutch"
+version = "0.1.0"
+description = "Hutch — isolated Playwright session orchestrator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+stealth = ["playwright-stealth>=2.0"]
+caido = ["caido-py>=0.1"]
+all = ["hutch[stealth,caido]"]
+
+[project.scripts]
+hutch = "hutch.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hutch*"]
