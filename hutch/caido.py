@@ -57,7 +57,9 @@ class CaidoClient:
         if os.path.exists(self.config.token_file):
             with open(self.config.token_file) as f:
                 data = json.load(f)
-            return data.get("access_token") or data.get("token")
+            return (data.get("accessToken")
+                    or data.get("access_token")
+                    or data.get("token"))
         return None
 
     def _headers(self):
@@ -190,10 +192,25 @@ class CaidoClient:
         """, {"id": scope_id})
 
     async def is_in_scope(self, url):
-        data = await self._gql("""
-            query($url: String!) { isInScope(url: $url) }
-        """, {"url": url})
-        return data.get("isInScope", False)
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        scopes = await self.list_scopes()
+        for scope in scopes:
+            for pattern in scope.get("allowlist", []):
+                if self._host_matches(host, pattern):
+                    for deny in scope.get("denylist", []):
+                        if self._host_matches(host, deny):
+                            return False
+                    return True
+        return False
+
+    @staticmethod
+    def _host_matches(host, pattern):
+        if pattern.startswith("*."):
+            suffix = pattern[1:]
+            return host.endswith(suffix) or host == pattern[2:]
+        return host == pattern
 
     async def ensure_scope(self, name, allowlist, denylist=None):
         scopes = await self.list_scopes()
@@ -210,21 +227,29 @@ class CaidoClient:
     async def list_requests(self, *, httpql=None, scope_id=None,
                             first=50, after=None):
         variables = {"first": first}
-        filter_parts = []
+        var_defs = ["$first: Int!"]
+        args = []
+
         if httpql:
-            filter_parts.append(f'filter: "{httpql}"')
+            variables["filter"] = {"code": httpql}
+            var_defs.append("$filter: HTTPQLInput")
+            args.append("filter: $filter")
         if scope_id:
-            filter_parts.append(f'scopeId: "{scope_id}"')
+            variables["scopeId"] = scope_id
+            var_defs.append("$scopeId: ID")
+            args.append("scopeId: $scopeId")
         if after:
             variables["after"] = after
+            var_defs.append("$after: String")
+            args.append("after: $after")
 
-        filter_str = ", ".join(filter_parts)
-        after_str = ', after: $after' if after else ''
+        var_str = ", ".join(var_defs)
+        arg_str = ", ".join(args + ["first: $first",
+                                     "order: { by: CREATED_AT, ordering: DESC }"])
 
         data = await self._gql(f"""
-            query($first: Int!{', $after: String' if after else ''}) {{
-                requests({filter_str}, first: $first{after_str},
-                         order: {{ by: CREATED_AT, ordering: DESC }}) {{
+            query({var_str}) {{
+                requests({arg_str}) {{
                     edges {{
                         node {{
                             id
