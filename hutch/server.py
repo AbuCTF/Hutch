@@ -10,7 +10,7 @@ from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
 from .health import HealthMonitor, wire_context_to_health
 from .pool import Pool
-from .session import ProxyConfig
+from .session import ProxyConfig, SessionState
 
 
 _DEFAULT_SOCK = os.path.expanduser("~/.hutch/hutch.sock")
@@ -91,7 +91,16 @@ class HutchDaemon:
             session = self.pool._sessions.get(name)
             if session and session.context:
                 wire_context_to_health(session.context, self._health[name])
+            if session:
+                self._health[name].on_alert(
+                    lambda alert, s=session: self._on_health_alert(s, alert))
         return self._health[name]
+
+    def _on_health_alert(self, session, alert):
+        if not session.auto_pause:
+            return
+        if alert.type in ("captcha", "auth_expired"):
+            session.pause(alert.type)
 
     async def _handle_client(self, reader, writer):
         buf = b""
@@ -148,6 +157,7 @@ class HutchDaemon:
             "click": self._rpc_click,
             "fill": self._rpc_fill,
             "evaluate": self._rpc_evaluate,
+            "observe": self._rpc_observe,
             "snapshot": self._rpc_snapshot,
             "diff": self._rpc_diff,
             "screenshot": self._rpc_screenshot,
@@ -158,6 +168,9 @@ class HutchDaemon:
             "note": self._rpc_note,
             "notes": self._rpc_notes,
             "alerts": self._rpc_alerts,
+            "pause": self._rpc_pause,
+            "resume": self._rpc_resume,
+            "handoff": self._rpc_handoff,
             "status": self._rpc_status,
             "ping": self._rpc_ping,
         }
@@ -215,6 +228,7 @@ class HutchDaemon:
 
     async def _get_page(self, name):
         s = await self.pool.get(name, launch=True)
+        s._require_active()
         s._last_activity = time.time()
         pages = [p for p in s._pages if not p.is_closed()]
         if not pages:
@@ -225,17 +239,21 @@ class HutchDaemon:
     async def _rpc_goto(self, params):
         s, page = await self._get_page(params["name"])
         await page.goto(params["url"], wait_until=params.get("wait_until", "load"))
-        return {"url": page.url, "title": await page.title()}
+        return await s.page_state()
 
     async def _rpc_click(self, params):
-        _, page = await self._get_page(params["name"])
+        s, page = await self._get_page(params["name"])
         await page.click(params["selector"])
-        return {"clicked": params["selector"]}
+        return await s.page_state()
 
     async def _rpc_fill(self, params):
-        _, page = await self._get_page(params["name"])
+        s, page = await self._get_page(params["name"])
         await page.fill(params["selector"], params["value"])
-        return {"filled": params["selector"]}
+        return await s.page_state()
+
+    async def _rpc_observe(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.observe()
 
     async def _rpc_evaluate(self, params):
         _, page = await self._get_page(params["name"])
@@ -328,6 +346,30 @@ class HutchDaemon:
         all_alerts.sort(key=lambda a: a["timestamp"], reverse=True)
         return all_alerts
 
+    async def _rpc_pause(self, params):
+        name = params["name"]
+        s = await self.pool.get(name)
+        reason = params.get("reason", "manual")
+        s.pause(reason)
+        return {"paused": name, "reason": reason}
+
+    async def _rpc_resume(self, params):
+        name = params["name"]
+        s = await self.pool.get(name)
+        s.resume()
+        return {"resumed": name}
+
+    async def _rpc_handoff(self, params):
+        name = params["name"]
+        s = await self.pool.get(name)
+        return {
+            "name": name,
+            "state": s.state.value,
+            "pause_reason": s.pause_reason,
+            "alive": s.is_alive,
+            "url": s._active_page().url if s._active_page() else None,
+        }
+
     async def _rpc_status(self, params):
         pool_status = self.pool.status()
         pool_status["health"] = {
@@ -340,6 +382,8 @@ def _session_info(s):
     return {
         "name": s.name,
         "alive": s.is_alive,
+        "state": s.state.value,
+        "pause_reason": s.pause_reason,
         "pages": s.page_count,
         "headless": s.headless,
         "proxy": s.proxy.server if s.proxy else None,

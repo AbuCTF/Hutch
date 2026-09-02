@@ -34,6 +34,13 @@ class SessionHandle:
             "name": self.name, "expression": expression})
         return r.get("result")
 
+    async def observe(self):
+        return await self._client._call("observe", {"name": self.name})
+
+    async def page_state(self):
+        return await self._client._call("snapshot", {
+            "name": self.name, "full": False})
+
     async def snapshot(self, *, screenshot=False, storage=False, full=False, save=False):
         return await self._client._call("snapshot", {
             "name": self.name, "screenshot": screenshot,
@@ -71,6 +78,16 @@ class SessionHandle:
 
     async def notes(self):
         return await self._client._call("notes", {"name": self.name})
+
+    async def pause(self, *, reason="manual"):
+        return await self._client._call("pause", {
+            "name": self.name, "reason": reason})
+
+    async def resume(self):
+        return await self._client._call("resume", {"name": self.name})
+
+    async def handoff(self):
+        return await self._client._call("handoff", {"name": self.name})
 
     async def close(self):
         return await self._client._call("close", {"name": self.name})

@@ -1,10 +1,18 @@
+import asyncio
 import json
 import os
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 from .context import Context, Snapshot
+
+
+class SessionState(Enum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    HIBERNATED = "hibernated"
 
 
 @dataclass
@@ -53,6 +61,9 @@ class Session:
         self.tags = tags or {}
         self.capture = capture
         self.context = Context() if capture else None
+        self.state = SessionState.ACTIVE
+        self.pause_reason = None
+        self.auto_pause = True
 
         self._context = None
         self._browser = None
@@ -61,6 +72,9 @@ class Session:
         self._created_at = time.time()
         self._last_activity = time.time()
         self._snapshot_cursor = 0
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
+        self._pause_callbacks = []
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -183,6 +197,7 @@ class Session:
         return self._context
 
     async def new_page(self):
+        self._require_active()
         if not self._context:
             raise RuntimeError(f"session '{self.name}' not launched")
         page = await self._context.new_page()
@@ -265,6 +280,118 @@ class Session:
         self._snapshot_cursor = self.context.cursor
         return d
 
+    async def page_state(self):
+        page = self._active_page()
+        if not page:
+            return {"url": "", "title": "", "dom": None}
+        self._last_activity = time.time()
+        dom = None
+        try:
+            dom = await page.accessibility.snapshot()
+        except Exception:
+            pass
+        return {
+            "url": page.url,
+            "title": await page.title(),
+            "dom": dom,
+        }
+
+    async def observe(self):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            return []
+        self._last_activity = time.time()
+        return await page.evaluate("""() => {
+            const results = [];
+            let idx = 0;
+            const walk = (el) => {
+                const tag = el.tagName?.toLowerCase();
+                if (!tag) return;
+                const interactive = (
+                    tag === 'a' || tag === 'button' || tag === 'input' ||
+                    tag === 'select' || tag === 'textarea' ||
+                    el.getAttribute('role') === 'button' ||
+                    el.getAttribute('role') === 'link' ||
+                    el.getAttribute('role') === 'tab' ||
+                    el.getAttribute('role') === 'menuitem' ||
+                    el.getAttribute('contenteditable') === 'true' ||
+                    el.onclick !== null ||
+                    el.hasAttribute('tabindex')
+                );
+                if (interactive && el.offsetParent !== null) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        const entry = {
+                            idx: idx++,
+                            tag: tag,
+                            type: el.type || null,
+                            role: el.getAttribute('role') || null,
+                            text: (el.innerText || el.value || el.placeholder || el.title || el.alt || '').slice(0, 100).trim(),
+                            name: el.name || null,
+                            id: el.id || null,
+                            href: el.href || null,
+                            selector: _selector(el),
+                        };
+                        if (tag === 'input') entry.inputType = el.type;
+                        if (tag === 'select') {
+                            entry.options = Array.from(el.options).slice(0, 20).map(o => o.text.trim());
+                        }
+                        if (tag === 'form' || el.closest('form')) {
+                            const form = tag === 'form' ? el : el.closest('form');
+                            entry.formAction = form?.getAttribute('action') || null;
+                            entry.formMethod = form?.getAttribute('method') || null;
+                        }
+                        results.push(entry);
+                    }
+                }
+                for (const child of el.children) walk(child);
+            };
+            const _selector = (el) => {
+                if (el.id) return '#' + el.id;
+                const tag = el.tagName.toLowerCase();
+                const cls = el.className?.split?.(' ')?.filter(c => c && c.length < 30)?.slice(0, 2)?.join('.') || '';
+                const base = cls ? tag + '.' + cls : tag;
+                const text = (el.innerText || '').slice(0, 30).trim();
+                if (text) return base + ':has-text("' + text.replace(/"/g, '\\\\"') + '")';
+                return base;
+            };
+            walk(document.body);
+            return results;
+        }""")
+
+    def pause(self, reason="manual"):
+        if self.state == SessionState.PAUSED:
+            return
+        self.state = SessionState.PAUSED
+        self.pause_reason = reason
+        self._resume_event.clear()
+        for cb in self._pause_callbacks:
+            try:
+                cb(self.name, reason)
+            except Exception:
+                pass
+
+    def resume(self):
+        if self.state != SessionState.PAUSED:
+            return
+        self.state = SessionState.ACTIVE
+        self.pause_reason = None
+        self._resume_event.set()
+        self._last_activity = time.time()
+
+    def on_pause(self, callback):
+        self._pause_callbacks.append(callback)
+        return lambda: self._pause_callbacks.remove(callback)
+
+    def _require_active(self):
+        if self.state == SessionState.PAUSED:
+            raise RuntimeError(
+                f"session '{self.name}' is paused ({self.pause_reason}) "
+                "— resolve the challenge and call resume()")
+        if self.state == SessionState.HIBERNATED:
+            raise RuntimeError(f"session '{self.name}' is hibernated — relaunch first")
+
     async def save_state(self):
         if not self._context:
             return
@@ -280,6 +407,8 @@ class Session:
             self._context = None
             self._pages = []
             self._launched_at = None
+            if self.state != SessionState.PAUSED:
+                self.state = SessionState.HIBERNATED
 
     @property
     def is_alive(self):
@@ -306,6 +435,8 @@ class Session:
             "fingerprint": f"{self.fingerprint.viewport_width}x{self.fingerprint.viewport_height}",
             "profile_dir": self.profile_dir,
             "tags": self.tags,
+            "state": self.state.value,
+            "pause_reason": self.pause_reason,
         }
 
     def __repr__(self):

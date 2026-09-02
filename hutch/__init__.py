@@ -1,4 +1,4 @@
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .artifacts import ArtifactStore  # noqa: F401
 from .client import HutchClient, HutchError, SessionHandle, connect  # noqa: F401
@@ -14,4 +14,4 @@ from .context import (  # noqa: F401
 from .fingerprint import Fingerprint, generate, generate_for_program  # noqa: F401
 from .health import Alert, HealthMonitor  # noqa: F401
 from .pool import Pool  # noqa: F401
-from .session import ProxyConfig, Session  # noqa: F401
+from .session import ProxyConfig, Session, SessionState  # noqa: F401
