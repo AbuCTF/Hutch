@@ -3,6 +3,7 @@ import asyncio
 import re
 import sys
 
+from . import __version__
 from .fingerprint import generate, generate_for_program, list_presets
 from .pool import Pool
 from .session import Fingerprint, ProxyConfig
@@ -98,17 +99,10 @@ async def cmd_status(pool, args):
 
 
 async def cmd_open(pool, args):
-    s = await pool.get(args.name)
-    if args.headed and s.is_alive and s.headless:
-        await s.close()
-    if args.headed:
-        s.headless = False
-    if not s.is_alive:
-        await s.launch(pool._playwright)
+    s = await pool.get(args.name, launch=True)
     page = await s.new_page()
     await page.goto(args.url)
-    print(f"opened {args.url} in '{args.name}'"
-          f"{' (headed)' if not s.headless else ''}")
+    print(f"opened {args.url} in '{args.name}'")
 
 
 async def cmd_screenshot(pool, args):
@@ -282,7 +276,7 @@ def main():
             "  presets          list fingerprint presets"
         ),
     )
-    p.add_argument("--version", action="version", version="%(prog)s 0.3.1")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--base-dir", default=None, metavar="DIR",
                    help="profile storage directory (default: ~/.hutch/profiles)")
     p.add_argument("--max-sessions", type=int, default=5, metavar="N",
@@ -322,7 +316,6 @@ def main():
     c = _sub("open")
     c.add_argument("name", help="session name")
     c.add_argument("url", help="URL to navigate to")
-    c.add_argument("--headed", action="store_true", help="relaunch in headed mode")
     c.set_defaults(func=cmd_open)
 
     c = _sub("screenshot")

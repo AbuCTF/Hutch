@@ -130,6 +130,7 @@ class Session:
             tags=meta.get("tags", {}),
         )
         s._created_at = meta.get("created_at", time.time())
+        s.state = SessionState.HIBERNATED
         return s
 
     def _launch_args(self):
@@ -184,6 +185,7 @@ class Session:
         self._context = await playwright.chromium.launch_persistent_context(**kwargs)
         self._launched_at = time.time()
         self._last_activity = time.time()
+        self.state = SessionState.ACTIVE
         if self.fingerprint.platform:
             await self._context.add_init_script(
                 f"Object.defineProperty(navigator, 'platform', {{get: () => '{self.fingerprint.platform}'}})"
