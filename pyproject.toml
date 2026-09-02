@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 stealth = ["playwright-stealth>=2.0"]
 caido = ["caido-py>=0.1"]
+dev = ["pytest>=7.0", "pytest-asyncio>=1.0"]
 all = ["hutch[stealth,caido]"]
 
 [project.scripts]

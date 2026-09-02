@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .context import Context, Snapshot
+
 
 @dataclass
 class Fingerprint:
@@ -39,7 +41,8 @@ class Session:
 
     def __init__(self, name, profile_dir, *,
                  proxy=None, fingerprint=None, headless=True,
-                 ignore_https_errors=False, stealth=True, tags=None):
+                 ignore_https_errors=False, stealth=True, tags=None,
+                 capture=True):
         self.name = name
         self.profile_dir = profile_dir
         self.proxy = proxy
@@ -48,12 +51,16 @@ class Session:
         self.ignore_https_errors = ignore_https_errors
         self.stealth = stealth
         self.tags = tags or {}
+        self.capture = capture
+        self.context = Context() if capture else None
 
         self._context = None
         self._browser = None
         self._pages = []
         self._launched_at = None
         self._created_at = time.time()
+        self._last_activity = time.time()
+        self._snapshot_cursor = 0
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -161,6 +168,7 @@ class Session:
         kwargs = self._launch_args()
         self._context = await playwright.chromium.launch_persistent_context(**kwargs)
         self._launched_at = time.time()
+        self._last_activity = time.time()
         if self.fingerprint.platform:
             await self._context.add_init_script(
                 f"Object.defineProperty(navigator, 'platform', {{get: () => '{self.fingerprint.platform}'}})"
@@ -169,6 +177,9 @@ class Session:
             from .stealth import apply_stealth
             await apply_stealth(self._context)
         self._pages = self._context.pages[:]
+        if self.context:
+            for page in self._pages:
+                self.context.hook_page(page)
         return self._context
 
     async def new_page(self):
@@ -176,7 +187,83 @@ class Session:
             raise RuntimeError(f"session '{self.name}' not launched")
         page = await self._context.new_page()
         self._pages.append(page)
+        self._last_activity = time.time()
+        if self.context:
+            self.context.hook_page(page)
         return page
+
+    def _active_page(self):
+        if not self._context:
+            return None
+        pages = [p for p in self._pages if not p.is_closed()]
+        return pages[-1] if pages else None
+
+    async def snapshot(self, *, screenshot=False, storage=False, full=False):
+        if not self.context:
+            raise RuntimeError("context capture not enabled")
+        self._last_activity = time.time()
+        page = self._active_page()
+        url = ""
+        title = ""
+        cookies = []
+        dom = None
+        shot = None
+        store = None
+
+        if page:
+            url = page.url
+            title = await page.title()
+            try:
+                dom = await page.accessibility.snapshot()
+            except Exception:
+                pass
+            if screenshot:
+                shot = await page.screenshot()
+            if storage:
+                store = await page.evaluate("""() => {
+                    const ls = {}; const ss = {};
+                    try { for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i); ls[k] = localStorage.getItem(k);
+                    }} catch(e) {}
+                    try { for (let i = 0; i < sessionStorage.length; i++) {
+                        const k = sessionStorage.key(i); ss[k] = sessionStorage.getItem(k);
+                    }} catch(e) {}
+                    return {localStorage: ls, sessionStorage: ss};
+                }""")
+
+        if self._context:
+            cookies = await self._context.cookies()
+
+        since = 0 if full else self._snapshot_cursor
+        snap = Snapshot(
+            url=url,
+            title=title,
+            cursor=self.context.cursor,
+            timestamp=time.time(),
+            cookies=cookies,
+            dom=dom,
+            screenshot=shot,
+            network=self.context.network.since(since),
+            console=self.context.console.since(since),
+            errors=self.context.errors.since(since),
+            navigations=self.context.navigations.since(since),
+            storage=store,
+        )
+        self.context._last_cookies = list(cookies)
+        self._snapshot_cursor = self.context.cursor
+        return snap
+
+    async def diff(self, since=None):
+        if not self.context:
+            raise RuntimeError("context capture not enabled")
+        self._last_activity = time.time()
+        cursor = since if since is not None else self._snapshot_cursor
+        cookies = []
+        if self._context:
+            cookies = await self._context.cookies()
+        d = self.context.diff(since=cursor, current_cookies=cookies)
+        self._snapshot_cursor = self.context.cursor
+        return d
 
     async def save_state(self):
         if not self._context:
