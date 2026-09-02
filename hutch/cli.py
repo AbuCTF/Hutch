@@ -269,11 +269,11 @@ def main():
         epilog=(
             "session commands:\n"
             "  create          create a new session\n"
-            "  list (ls)       list sessions\n"
+            "  list            list sessions\n"
             "  status          show session details\n"
             "  open            open a URL in a session\n"
             "  drive           open headed browser for interactive use\n"
-            "  screenshot (ss) take a screenshot\n"
+            "  screenshot      take a screenshot\n"
             "  auth            open headed browser for manual login\n"
             "  close           close a running session\n"
             "  destroy         close and delete session profile\n"
@@ -314,7 +314,7 @@ def main():
     c.add_argument("--tag", action="append", metavar="K=V", help="attach metadata tag")
     c.set_defaults(func=cmd_create)
 
-    c = _sub("list", aliases=["ls"])
+    c = _sub("list")
     c.add_argument("--alive", action="store_true", help="only show running sessions")
     c.set_defaults(func=cmd_list)
 
@@ -328,7 +328,7 @@ def main():
     c.add_argument("--headed", action="store_true", help="relaunch in headed mode")
     c.set_defaults(func=cmd_open)
 
-    c = _sub("screenshot", aliases=["ss"])
+    c = _sub("screenshot")
     c.add_argument("name", help="session name")
     c.add_argument("output", nargs="?", default="screenshot.png", metavar="FILE",
                    help="output file path (default: screenshot.png)")
