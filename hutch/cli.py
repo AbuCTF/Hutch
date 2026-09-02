@@ -75,11 +75,16 @@ async def cmd_open(pool, args):
 
 async def cmd_screenshot(pool, args):
     s = await pool.get(args.name, launch=True)
-    pages = [p for p in s._pages if not p.is_closed()]
-    if not pages:
-        print("no open pages")
+    page = None
+    if args.url:
+        page = await s.new_page()
+        await page.goto(args.url)
+    else:
+        pages = [p for p in s._pages if not p.is_closed()]
+        page = pages[-1] if pages else None
+    if not page:
+        print("no open pages — use --url to navigate first")
         return
-    page = pages[-1]
     await page.screenshot(path=args.output, full_page=args.full_page)
     print(f"saved: {args.output}")
 
@@ -127,8 +132,11 @@ async def cmd_destroy(pool, args):
 
 
 async def cmd_presets(_pool, _args):
+    fmt = "{:<25} {:<12} {:<15} {}"
+    print(fmt.format("NAME", "VIEWPORT", "PLATFORM", "LOCALE"))
+    print("-" * 60)
     for p in list_presets():
-        print(f"  {p['name']:<25} {p['viewport']:<12} {p['platform']:<15} {p['locale']}")
+        print(fmt.format(p["name"], p["viewport"], p["platform"], p["locale"]))
 
 
 async def _run(args):
@@ -137,61 +145,67 @@ async def _run(args):
 
 
 def main():
-    p = argparse.ArgumentParser(prog="hutch")
-    p.add_argument("--base-dir", default=None)
-    p.add_argument("--max-sessions", type=int, default=5)
+    p = argparse.ArgumentParser(
+        prog="hutch",
+        description="isolated playwright session orchestrator",
+    )
+    p.add_argument("--base-dir", default=None, metavar="DIR",
+                   help="profile storage directory (default: ~/.hutch/profiles)")
+    p.add_argument("--max-sessions", type=int, default=5, metavar="N",
+                   help="max concurrent browser sessions (default: 5)")
 
-    sub = p.add_subparsers(dest="command")
+    sub = p.add_subparsers(dest="command", metavar="command")
 
-    c = sub.add_parser("create")
-    c.add_argument("name")
-    c.add_argument("--proxy")
-    c.add_argument("--bypass")
-    c.add_argument("--preset")
-    c.add_argument("--program")
-    c.add_argument("--locale")
-    c.add_argument("--timezone")
-    c.add_argument("--headed", action="store_true")
-    c.add_argument("--ignore-https-errors", action="store_true")
-    c.add_argument("--url")
-    c.add_argument("--tag", action="append")
+    c = sub.add_parser("create", help="create a new session")
+    c.add_argument("name", help="session name")
+    c.add_argument("--proxy", metavar="URL", help="proxy server (http/socks5)")
+    c.add_argument("--bypass", metavar="HOSTS", help="proxy bypass list")
+    c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
+    c.add_argument("--program", metavar="NAME", help="program name (deterministic fingerprint)")
+    c.add_argument("--locale", metavar="CODE", help="override locale (e.g. ja-JP)")
+    c.add_argument("--timezone", metavar="TZ", help="override timezone (e.g. Asia/Tokyo)")
+    c.add_argument("--headed", action="store_true", help="run with visible browser")
+    c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
+    c.add_argument("--url", metavar="URL", help="navigate after creation")
+    c.add_argument("--tag", action="append", metavar="K=V", help="attach metadata tag")
     c.set_defaults(func=cmd_create)
 
-    c = sub.add_parser("list", aliases=["ls"])
-    c.add_argument("--alive", action="store_true")
+    c = sub.add_parser("list", aliases=["ls"], help="list sessions")
+    c.add_argument("--alive", action="store_true", help="only show running sessions")
     c.set_defaults(func=cmd_list)
 
-    c = sub.add_parser("status")
-    c.add_argument("name")
+    c = sub.add_parser("status", help="show session details (JSON)")
+    c.add_argument("name", help="session name")
     c.set_defaults(func=cmd_status)
 
-    c = sub.add_parser("open")
-    c.add_argument("name")
-    c.add_argument("url")
+    c = sub.add_parser("open", help="open a URL in a session")
+    c.add_argument("name", help="session name")
+    c.add_argument("url", help="URL to navigate to")
     c.set_defaults(func=cmd_open)
 
-    c = sub.add_parser("screenshot", aliases=["ss"])
-    c.add_argument("name")
-    c.add_argument("output", default="screenshot.png", nargs="?")
-    c.add_argument("--full-page", action="store_true")
+    c = sub.add_parser("screenshot", aliases=["ss"], help="take a screenshot")
+    c.add_argument("name", help="session name")
+    c.add_argument("output", default="screenshot.png", nargs="?", help="output file path")
+    c.add_argument("--url", metavar="URL", help="navigate to URL before capturing")
+    c.add_argument("--full-page", action="store_true", help="capture full scrollable page")
     c.set_defaults(func=cmd_screenshot)
 
-    c = sub.add_parser("auth")
-    c.add_argument("name")
-    c.add_argument("--url")
-    c.add_argument("--proxy")
-    c.add_argument("--preset")
+    c = sub.add_parser("auth", help="open headed browser for manual login")
+    c.add_argument("name", help="session name")
+    c.add_argument("--url", metavar="URL", help="login page URL")
+    c.add_argument("--proxy", metavar="URL", help="proxy server")
+    c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
     c.set_defaults(func=cmd_auth)
 
-    c = sub.add_parser("close")
-    c.add_argument("name")
+    c = sub.add_parser("close", help="close a running session")
+    c.add_argument("name", help="session name")
     c.set_defaults(func=cmd_close)
 
-    c = sub.add_parser("destroy")
-    c.add_argument("name")
+    c = sub.add_parser("destroy", help="close and delete session profile")
+    c.add_argument("name", help="session name")
     c.set_defaults(func=cmd_destroy)
 
-    c = sub.add_parser("presets")
+    c = sub.add_parser("presets", help="list fingerprint presets")
     c.set_defaults(func=cmd_presets)
 
     args = p.parse_args()
