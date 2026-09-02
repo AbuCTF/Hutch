@@ -120,6 +120,39 @@ class Pool:
         if os.path.isdir(session.profile_dir):
             shutil.rmtree(session.profile_dir)
 
+    async def parallel(self, names, action):
+        sessions = [await self.get(n, launch=True) for n in names]
+        tasks = [asyncio.create_task(action(s)) for s in sessions]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return dict(zip(names, results))
+
+    async def parallel_goto(self, names, url, *, wait_until="load"):
+        async def go(s):
+            return await s.goto(url, wait_until=wait_until)
+        return await self.parallel(names, go)
+
+    async def compare(self, names, url, *, wait_until="load"):
+        results = await self.parallel_goto(names, url, wait_until=wait_until)
+        comparison = {}
+        for name, state in results.items():
+            if isinstance(state, Exception):
+                comparison[name] = {"error": str(state)}
+                continue
+            s = self._sessions[name]
+            network = []
+            if s.context:
+                network = [
+                    {"url": e.url, "status": e.status, "method": e.method}
+                    for e in s.context.network.all()
+                    if e.url and url in e.url
+                ]
+            comparison[name] = {
+                "url": state.get("url", ""),
+                "title": state.get("title", ""),
+                "network": network,
+            }
+        return comparison
+
     def list(self, *, alive_only=False, tag=None):
         sessions = list(self._sessions.values())
         if alive_only:

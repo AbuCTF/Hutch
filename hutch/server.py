@@ -181,6 +181,8 @@ class HutchDaemon:
             "note": self._rpc_note,
             "notes": self._rpc_notes,
             "alerts": self._rpc_alerts,
+            "parallel_goto": self._rpc_parallel_goto,
+            "compare": self._rpc_compare,
             "pause": self._rpc_pause,
             "resume": self._rpc_resume,
             "handoff": self._rpc_handoff,
@@ -438,6 +440,25 @@ class HutchDaemon:
             all_alerts.extend(mon.unacknowledged())
         all_alerts.sort(key=lambda a: a["timestamp"], reverse=True)
         return all_alerts
+
+    async def _rpc_parallel_goto(self, params):
+        names = params["names"]
+        url = params["url"]
+        results = await self.pool.parallel_goto(
+            names, url, wait_until=params.get("wait_until", "load"))
+        out = {}
+        for name, state in results.items():
+            if isinstance(state, Exception):
+                out[name] = {"error": str(state)}
+            else:
+                out[name] = state
+        return out
+
+    async def _rpc_compare(self, params):
+        names = params["names"]
+        url = params["url"]
+        return await self.pool.compare(
+            names, url, wait_until=params.get("wait_until", "load"))
 
     async def _rpc_pause(self, params):
         name = params["name"]

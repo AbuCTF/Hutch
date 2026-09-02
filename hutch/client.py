@@ -232,6 +232,14 @@ class HutchClient:
     async def destroy(self, name):
         return await self._call("destroy", {"name": name})
 
+    async def parallel_goto(self, names, url, *, wait_until="load"):
+        return await self._call("parallel_goto", {
+            "names": names, "url": url, "wait_until": wait_until})
+
+    async def compare(self, names, url, *, wait_until="load"):
+        return await self._call("compare", {
+            "names": names, "url": url, "wait_until": wait_until})
+
     async def alerts(self, *, session=None):
         return await self._call("alerts", {"name": session})
 
