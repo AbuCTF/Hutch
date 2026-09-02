@@ -591,13 +591,14 @@ class HutchClient:
 
     async def create(self, name, *, program=None, preset=None, proxy=None,
                      headless=True, ignore_https_errors=False,
-                     locale=None, timezone=None, tags=None):
+                     locale=None, timezone=None, tags=None, caido=False):
         result = await self._call("create", {
             "name": name, "program": program, "preset": preset,
             "proxy": proxy, "headless": headless,
             "ignore_https_errors": ignore_https_errors,
             "locale": locale, "timezone": timezone,
             "tags": tags or {},
+            "caido": caido,
         })
         return SessionHandle(self, name)
 

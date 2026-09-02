@@ -11,11 +11,11 @@ requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
     "playwright>=1.40",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]
 stealth = ["playwright-stealth>=2.0"]
-caido = ["caido-py>=0.1"]
 dev = ["pytest>=7.0", "pytest-asyncio>=1.0"]
 all = ["hutch[stealth,caido]"]
 

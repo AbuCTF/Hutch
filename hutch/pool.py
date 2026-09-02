@@ -6,6 +6,7 @@ from typing import Optional
 
 from playwright.async_api import async_playwright
 
+from .caido import CaidoClient, CaidoConfig
 from .differ import diff_responses
 from .session import Fingerprint, ProxyConfig, Session
 
@@ -21,6 +22,7 @@ class Pool:
         self._sessions = {}
         self._playwright = None
         self._pw_context = None
+        self.caido = None
 
         os.makedirs(self.base_dir, exist_ok=True)
 
@@ -34,6 +36,9 @@ class Pool:
     async def stop(self):
         for s in list(self._sessions.values()):
             await s.close()
+        if self.caido:
+            await self.caido.close()
+            self.caido = None
         if self._pw_context:
             await self._playwright.stop()
             self._pw_context = None
@@ -61,7 +66,7 @@ class Pool:
 
     async def create(self, name, *, proxy=None, fingerprint=None,
                      headless=True, ignore_https_errors=False,
-                     launch=True, tags=None):
+                     launch=True, tags=None, caido=False):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -71,7 +76,11 @@ class Pool:
                 f"max {self.max_sessions} simultaneous sessions"
             )
 
-        if isinstance(proxy, str):
+        if caido:
+            port = caido if isinstance(caido, int) else 8080
+            proxy = ProxyConfig(server=f"http://127.0.0.1:{port}")
+            ignore_https_errors = True
+        elif isinstance(proxy, str):
             proxy = ProxyConfig(server=proxy)
 
         profile_dir = os.path.join(self.base_dir, name)
@@ -184,6 +193,33 @@ class Pool:
             "alive": sum(1 for s in self._sessions.values() if s.is_alive),
             "sessions": [s.status() for s in self._sessions.values()],
         }
+
+    async def setup_caido(self, *, url=None, token=None, project=None,
+                          scope_name=None, allowlist=None, denylist=None,
+                          port=8080):
+        config = CaidoConfig(
+            url=url or f"http://127.0.0.1:{port}",
+            token=token,
+        )
+        self.caido = CaidoClient(config)
+        await self.caido.connect()
+        result = {"connected": True, "proxy": config.url}
+        if project:
+            p = await self.caido.ensure_project(project)
+            result["project"] = p
+        if scope_name and allowlist:
+            s = await self.caido.ensure_scope(scope_name, allowlist, denylist)
+            result["scope"] = s
+        return result
+
+    async def caido_create_session(self, name, *, fingerprint=None,
+                                    headless=True, tags=None, **kw):
+        if not self.caido:
+            raise RuntimeError("call setup_caido() first")
+        port = int(self.caido.config.url.rsplit(":", 1)[-1].rstrip("/"))
+        return await self.create(
+            name, caido=port, fingerprint=fingerprint,
+            headless=headless, tags=tags, **kw)
 
     def __contains__(self, name):
         return name in self._sessions

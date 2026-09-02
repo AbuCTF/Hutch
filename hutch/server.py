@@ -303,6 +303,7 @@ class HutchDaemon:
             headless=params.get("headless", True),
             ignore_https_errors=params.get("ignore_https_errors", False),
             tags=params.get("tags", {}),
+            caido=params.get("caido", False),
         )
         self._get_health(name)
         return _session_info(s)

@@ -9,6 +9,7 @@ from .pool import Pool
 from .session import Fingerprint, ProxyConfig
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+_CAIDO_DEFAULT_PORT = 8080
 
 
 def _validate_name(name):
@@ -27,6 +28,17 @@ def _parse_tag(value):
     return k, v
 
 
+def _resolve_proxy(args):
+    if getattr(args, "caido", None) is not None:
+        port = args.caido
+        if args.proxy:
+            raise SystemExit("hutch: --caido and --proxy are mutually exclusive")
+        args.proxy = f"http://127.0.0.1:{port}"
+        args.ignore_https_errors = True
+    proxy = ProxyConfig(server=args.proxy, bypass=getattr(args, "bypass", None)) if args.proxy else None
+    return proxy
+
+
 async def cmd_create(pool, args):
     _validate_name(args.name)
     fp = None
@@ -35,9 +47,7 @@ async def cmd_create(pool, args):
     elif args.program:
         fp = generate_for_program(args.program, locale=args.locale, timezone=args.timezone)
 
-    proxy = None
-    if args.proxy:
-        proxy = ProxyConfig(server=args.proxy, bypass=args.bypass)
+    proxy = _resolve_proxy(args)
 
     tags = {}
     if args.program:
@@ -60,7 +70,8 @@ async def cmd_create(pool, args):
     print(f"  fingerprint: {fp_info.viewport_width}x{fp_info.viewport_height} "
           f"{fp_info.platform or 'default'} {fp_info.locale} {fp_info.timezone}")
     if proxy:
-        print(f"  proxy: {proxy.server}")
+        label = "caido" if getattr(args, "caido", None) is not None else "proxy"
+        print(f"  {label}: {proxy.server}")
     if args.url:
         page = await s.new_page()
         await page.goto(args.url)
@@ -127,10 +138,10 @@ async def cmd_auth(pool, args):
         fp = None
         if args.preset:
             fp = generate(preset=args.preset)
-        proxy = ProxyConfig(server=args.proxy) if args.proxy else None
+        proxy = _resolve_proxy(args)
         s = await pool.create(
             name, proxy=proxy, fingerprint=fp,
-            headless=False, ignore_https_errors=bool(args.proxy),
+            headless=False, ignore_https_errors=args.ignore_https_errors or bool(args.proxy),
         )
     else:
         s = await pool.get(name)
@@ -164,13 +175,14 @@ async def cmd_drive(pool, args):
         elif args.program:
             fp = generate_for_program(args.program, locale=args.locale,
                                       timezone=args.timezone)
-        proxy = ProxyConfig(server=args.proxy) if args.proxy else None
+        proxy = _resolve_proxy(args)
         s = await pool.create(
             name, proxy=proxy, fingerprint=fp,
             headless=False,
             ignore_https_errors=args.ignore_https_errors,
         )
-        print(f"created '{name}' (headed)")
+        via = " via caido" if getattr(args, "caido", None) is not None else ""
+        print(f"created '{name}' (headed{via})")
     else:
         s = await pool.get(name)
         if s.is_alive and s.headless:
@@ -226,6 +238,97 @@ async def cmd_presets(_pool, _args):
         print(fmt.format(p["name"], p["viewport"], p["platform"], p["locale"]))
 
 
+async def cmd_caido(_pool, args):
+    from .caido import CaidoClient, CaidoConfig, CaidoError
+    port = getattr(args, "port", _CAIDO_DEFAULT_PORT) or _CAIDO_DEFAULT_PORT
+    config = CaidoConfig(url=f"http://127.0.0.1:{port}")
+    try:
+        async with CaidoClient(config) as caido:
+            sub = args.caido_sub
+
+            if sub == "status":
+                info = await caido.instance_info()
+                projects = await caido.list_projects()
+                scopes = await caido.list_scopes()
+                print(f"caido: {info.get('version', '?')} ({info.get('platform', '?')})")
+                print(f"  url: {config.url}")
+                print(f"  projects: {len(projects)}/2")
+                for p in projects:
+                    print(f"    {p['name']} ({p.get('status', '?')})")
+                print(f"  scopes: {len(scopes)}")
+                for s in scopes:
+                    print(f"    {s['name']}: {', '.join(s.get('allowlist', []))}")
+
+            elif sub == "projects":
+                projects = await caido.list_projects()
+                if not projects:
+                    print("no projects")
+                    return
+                for p in projects:
+                    size = p.get("size", 0)
+                    size_mb = f"{size / 1024 / 1024:.1f}MB" if size else "?"
+                    print(f"  {p['name']}  {p.get('status', '?')}  {size_mb}")
+
+            elif sub == "scopes":
+                scopes = await caido.list_scopes()
+                if not scopes:
+                    print("no scopes")
+                    return
+                for s in scopes:
+                    allow = ", ".join(s.get("allowlist", []))
+                    deny = ", ".join(s.get("denylist", []))
+                    print(f"  {s['name']}")
+                    print(f"    allow: {allow or '(none)'}")
+                    if deny:
+                        print(f"    deny:  {deny}")
+
+            elif sub == "history":
+                httpql = args.filter or None
+                result = await caido.list_requests(httpql=httpql, first=args.count)
+                if not result["items"]:
+                    print("no requests")
+                    return
+                fmt = "{:<6} {:<6} {:<30} {:<40} {}"
+                print(fmt.format("ID", "CODE", "HOST", "PATH", "METHOD"))
+                for r in result["items"]:
+                    code = str(r.get("response", {}).get("statusCode", "")) if r.get("response") else ""
+                    print(fmt.format(
+                        str(r["id"])[:6],
+                        code,
+                        r["host"][:30],
+                        r["path"][:40],
+                        r["method"],
+                    ))
+
+            elif sub == "findings":
+                findings = await caido.list_findings()
+                if not findings:
+                    print("no findings")
+                    return
+                for f in findings:
+                    req = f.get("request", {})
+                    print(f"  [{f['id'][:8]}] {f['title']}")
+                    print(f"    {req.get('method', '?')} {req.get('host', '?')}{req.get('path', '?')}")
+                    print(f"    reporter: {f.get('reporter', '?')}")
+
+            elif sub == "scope-check":
+                result = await caido.is_in_scope(args.url)
+                print(f"{'in scope' if result else 'OUT OF SCOPE'}: {args.url}")
+
+            else:
+                print(f"hutch caido: unknown subcommand '{sub}'")
+
+    except CaidoError as e:
+        print(f"hutch caido: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        if "Cannot connect" in str(e) or "Connection refused" in str(e):
+            print(f"hutch caido: cannot connect to Caido at {config.url}", file=sys.stderr)
+            print(f"  is Caido running?", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+
 async def cmd_serve(_pool, args):
     from .server import HutchDaemon
     daemon = HutchDaemon(
@@ -244,6 +347,9 @@ async def cmd_serve(_pool, args):
 async def _run(args):
     if args.command == "serve":
         await cmd_serve(None, args)
+        return
+    if args.command == "caido":
+        await cmd_caido(None, args)
         return
     try:
         async with Pool(base_dir=args.base_dir, max_sessions=args.max_sessions) as pool:
@@ -288,6 +394,14 @@ def main():
             "daemon:\n"
             "  serve           start persistent daemon\n"
             "\n"
+            "caido:\n"
+            "  caido status    show caido connection info\n"
+            "  caido projects  list caido projects\n"
+            "  caido scopes    list scope definitions\n"
+            "  caido history   query captured requests\n"
+            "  caido findings  list findings\n"
+            "  caido scope-check <url>  check if URL is in scope\n"
+            "\n"
             "other:\n"
             "  presets          list fingerprint presets"
         ),
@@ -310,6 +424,8 @@ def main():
     c = _sub("create")
     c.add_argument("name", help="session name")
     c.add_argument("--proxy", metavar="URL", help="proxy server (http/socks5)")
+    c.add_argument("--caido", type=int, nargs="?", const=_CAIDO_DEFAULT_PORT,
+                   metavar="PORT", help="route through Caido (default port 8080)")
     c.add_argument("--bypass", metavar="HOSTS", help="proxy bypass list")
     c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
     c.add_argument("--program", metavar="NAME", help="program name (deterministic fingerprint)")
@@ -346,13 +462,18 @@ def main():
     c.add_argument("name", help="session name")
     c.add_argument("--url", metavar="URL", help="login page URL")
     c.add_argument("--proxy", metavar="URL", help="proxy server")
+    c.add_argument("--caido", type=int, nargs="?", const=_CAIDO_DEFAULT_PORT,
+                   metavar="PORT", help="route through Caido (default port 8080)")
     c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
+    c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
     c.set_defaults(func=cmd_auth)
 
     c = _sub("drive")
     c.add_argument("name", help="session name (creates if new)")
     c.add_argument("--url", metavar="URL", help="navigate to URL")
     c.add_argument("--proxy", metavar="URL", help="proxy server")
+    c.add_argument("--caido", type=int, nargs="?", const=_CAIDO_DEFAULT_PORT,
+                   metavar="PORT", help="route through Caido (default port 8080)")
     c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
     c.add_argument("--program", metavar="NAME", help="program name")
     c.add_argument("--locale", metavar="CODE", help="override locale")
@@ -375,6 +496,21 @@ def main():
 
     c = _sub("presets")
     c.set_defaults(func=cmd_presets)
+
+    c = _sub("caido", help="manage caido proxy integration")
+    c.add_argument("--port", type=int, default=_CAIDO_DEFAULT_PORT,
+                   help="caido instance port (default: 8080)")
+    caido_sub = c.add_subparsers(dest="caido_sub")
+    cs = caido_sub.add_parser("status", help="show caido connection info")
+    cs = caido_sub.add_parser("projects", help="list caido projects")
+    cs = caido_sub.add_parser("scopes", help="list caido scopes")
+    cs = caido_sub.add_parser("history", help="query captured requests")
+    cs.add_argument("--filter", metavar="HTTPQL", help="HTTPQL filter query")
+    cs.add_argument("--count", type=int, default=20, help="max results (default: 20)")
+    cs = caido_sub.add_parser("findings", help="list caido findings")
+    cs = caido_sub.add_parser("scope-check", help="check if URL is in scope")
+    cs.add_argument("url", help="URL to check")
+    c.set_defaults(func=cmd_caido)
 
     args = p.parse_args()
     if not args.command:
