@@ -200,11 +200,8 @@ async def cmd_drive(pool, args):
         print(f"state saved for '{name}'")
     except (EOFError, KeyboardInterrupt):
         print()
-    if not args.keep:
-        await s.close()
-        print(f"closed '{name}'")
-    else:
-        print(f"keeping '{name}' alive")
+    await s.close()
+    print(f"closed '{name}'")
 
 
 async def cmd_close(pool, args):
@@ -352,8 +349,6 @@ def main():
     c.add_argument("--locale", metavar="CODE", help="override locale")
     c.add_argument("--timezone", metavar="TZ", help="override timezone")
     c.add_argument("--ignore-https-errors", action="store_true")
-    c.add_argument("--keep", action="store_true",
-                   help="keep session alive after exiting")
     c.set_defaults(func=cmd_drive)
 
     c = _sub("close")
