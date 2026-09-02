@@ -80,7 +80,6 @@ async def cmd_list(pool, args):
         return
     fmt = "{:<20} {:<8} {:<6} {:<20} {:<15}"
     print(fmt.format("NAME", "STATUS", "PAGES", "PROXY", "FINGERPRINT"))
-    print("-" * 75)
     for s in sessions:
         st = s.status()
         print(fmt.format(
@@ -188,13 +187,22 @@ async def cmd_drive(pool, args):
 
     print(f"\nbrowser is open — interact freely")
     print(f"press Enter to save state and close, or Ctrl+C to close without saving")
+    save = False
     try:
         input()
-        await s.save_state()
-        print(f"state saved for '{name}'")
+        save = True
     except (EOFError, KeyboardInterrupt):
         print()
-    await s.close()
+    if save:
+        try:
+            await s.save_state()
+            print(f"state saved for '{name}'")
+        except Exception:
+            pass
+    try:
+        await s.close()
+    except Exception:
+        pass
     print(f"closed '{name}'")
 
 
@@ -252,7 +260,15 @@ async def _run(args):
 
 
 def main():
-    p = argparse.ArgumentParser(
+    class _Parser(argparse.ArgumentParser):
+        def error(self, message):
+            if "invalid choice" in message:
+                cmd = message.split("'")[1] if "'" in message else ""
+                self.exit(1, f"hutch: unknown command '{cmd}'\n"
+                             f"run 'hutch --help' for usage\n")
+            super().error(message)
+
+    p = _Parser(
         prog="hutch",
         usage="hutch [options] <command> [<args>]",
         description="isolated playwright session orchestrator",
@@ -365,7 +381,10 @@ def main():
         p.print_help()
         sys.exit(1)
 
-    asyncio.run(_run(args))
+    try:
+        asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
