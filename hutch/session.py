@@ -50,7 +50,7 @@ class Session:
     def __init__(self, name, profile_dir, *,
                  proxy=None, fingerprint=None, headless=True,
                  ignore_https_errors=False, stealth=True, tags=None,
-                 capture=True):
+                 capture=True, record_video=None):
         self.name = name
         self.profile_dir = profile_dir
         self.proxy = proxy
@@ -60,6 +60,7 @@ class Session:
         self.stealth = stealth
         self.tags = tags or {}
         self.capture = capture
+        self.record_video = record_video
         self.context = Context() if capture else None
         self.state = SessionState.ACTIVE
         self.pause_reason = None
@@ -76,6 +77,11 @@ class Session:
         self._resume_event.set()
         self._pause_callbacks = []
         self._intercept_rules = []
+        self._dialog_handler = None
+        self._pending_dialog = None
+        self._popup_pages = []
+        self._downloads = []
+        self._cdp_session = None
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -141,6 +147,8 @@ class Session:
             "--no-first-run",
             "--no-default-browser-check",
         ]
+        if not self.headless:
+            chrome_args.append("--start-maximized")
         if fp.disable_webrtc:
             chrome_args.extend([
                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
@@ -149,7 +157,7 @@ class Session:
         args = {
             "user_data_dir": self.profile_dir,
             "headless": self.headless,
-            "viewport": {"width": fp.viewport_width, "height": fp.viewport_height},
+            "viewport": None if not self.headless else {"width": fp.viewport_width, "height": fp.viewport_height},
             "screen": {"width": fp.screen_width, "height": fp.screen_height},
             "locale": fp.locale,
             "timezone_id": fp.timezone,
@@ -158,9 +166,12 @@ class Session:
             "has_touch": fp.has_touch,
             "is_mobile": fp.is_mobile,
             "ignore_https_errors": self.ignore_https_errors,
+            "accept_downloads": True,
             "permissions": [],
             "args": chrome_args,
         }
+        if self.record_video:
+            args["record_video_dir"] = self.record_video
         if fp.user_agent:
             args["user_agent"] = fp.user_agent
         if fp.geolocation:
@@ -194,10 +205,17 @@ class Session:
             from .stealth import apply_stealth
             await apply_stealth(self._context)
         self._pages = self._context.pages[:]
-        if self.context:
-            for page in self._pages:
-                self.context.hook_page(page)
+        for page in self._pages:
+            self._setup_page(page)
+        self._context.on("page", lambda page: self._setup_page(page))
         return self._context
+
+    def _setup_page(self, page):
+        if self.context:
+            self.context.hook_page(page)
+        if self._dialog_handler:
+            page.on("dialog", self._dialog_handler)
+        page.on("download", lambda dl: self._downloads.append(dl))
 
     async def new_page(self):
         self._require_active()
@@ -206,8 +224,6 @@ class Session:
         page = await self._context.new_page()
         self._pages.append(page)
         self._last_activity = time.time()
-        if self.context:
-            self.context.hook_page(page)
         return page
 
     def _active_page(self):
@@ -215,6 +231,14 @@ class Session:
             return None
         pages = [p for p in self._pages if not p.is_closed()]
         return pages[-1] if pages else None
+
+    def _require_page(self):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        return page
 
     async def snapshot(self, *, screenshot=False, storage=False, full=False):
         if not self.context:
@@ -498,6 +522,628 @@ class Session:
             return results;
         }""")
 
+    # --- navigation ---
+
+    async def go_back(self, *, wait_until="load"):
+        page = self._require_page()
+        resp = await page.go_back(wait_until=wait_until)
+        return await self.page_state()
+
+    async def go_forward(self, *, wait_until="load"):
+        page = self._require_page()
+        resp = await page.go_forward(wait_until=wait_until)
+        return await self.page_state()
+
+    async def reload(self, *, wait_until="load"):
+        page = self._require_page()
+        await page.reload(wait_until=wait_until)
+        return await self.page_state()
+
+    # --- interaction ---
+
+    async def hover(self, selector):
+        page = self._require_page()
+        await page.hover(selector)
+        return await self.page_state()
+
+    async def dblclick(self, selector, *, wait_after="networkidle", timeout=5000):
+        page = self._require_page()
+        await page.dblclick(selector)
+        if wait_after:
+            try:
+                await page.wait_for_load_state(wait_after, timeout=timeout)
+            except Exception:
+                pass
+        return await self.page_state()
+
+    async def right_click(self, selector):
+        page = self._require_page()
+        await page.click(selector, button="right")
+        return await self.page_state()
+
+    async def scroll(self, *, direction="down", amount=500, selector=None):
+        page = self._require_page()
+        if selector:
+            loc = page.locator(selector)
+            await loc.scroll_into_view_if_needed()
+        else:
+            delta_x, delta_y = 0, 0
+            if direction == "down":
+                delta_y = amount
+            elif direction == "up":
+                delta_y = -amount
+            elif direction == "right":
+                delta_x = amount
+            elif direction == "left":
+                delta_x = -amount
+            await page.mouse.wheel(delta_x, delta_y)
+        return await self.page_state()
+
+    async def focus(self, selector):
+        page = self._require_page()
+        await page.focus(selector)
+
+    async def check(self, selector):
+        page = self._require_page()
+        await page.check(selector)
+        return await self.page_state()
+
+    async def uncheck(self, selector):
+        page = self._require_page()
+        await page.uncheck(selector)
+        return await self.page_state()
+
+    async def set_checked(self, selector, checked):
+        page = self._require_page()
+        await page.set_checked(selector, checked)
+        return await self.page_state()
+
+    async def set_input_files(self, selector, files):
+        page = self._require_page()
+        await page.set_input_files(selector, files)
+        return await self.page_state()
+
+    async def drag_and_drop(self, source, target):
+        page = self._require_page()
+        await page.drag_and_drop(source, target)
+        return await self.page_state()
+
+    async def tap(self, selector):
+        page = self._require_page()
+        await page.tap(selector)
+        return await self.page_state()
+
+    async def dispatch_event(self, selector, event_type, event_init=None):
+        page = self._require_page()
+        await page.dispatch_event(selector, event_type, event_init)
+
+    # --- content extraction ---
+
+    async def content(self):
+        page = self._require_page()
+        return await page.content()
+
+    async def inner_text(self, selector):
+        page = self._require_page()
+        return await page.inner_text(selector)
+
+    async def inner_html(self, selector):
+        page = self._require_page()
+        return await page.inner_html(selector)
+
+    async def text_content(self, selector):
+        page = self._require_page()
+        return await page.text_content(selector)
+
+    async def get_attribute(self, selector, name):
+        page = self._require_page()
+        return await page.get_attribute(selector, name)
+
+    async def input_value(self, selector):
+        page = self._require_page()
+        return await page.input_value(selector)
+
+    # --- element state ---
+
+    async def is_visible(self, selector):
+        page = self._require_page()
+        return await page.is_visible(selector)
+
+    async def is_checked(self, selector):
+        page = self._require_page()
+        return await page.is_checked(selector)
+
+    async def is_enabled(self, selector):
+        page = self._require_page()
+        return await page.is_enabled(selector)
+
+    async def is_hidden(self, selector):
+        page = self._require_page()
+        return await page.is_hidden(selector)
+
+    async def is_editable(self, selector):
+        page = self._require_page()
+        return await page.is_editable(selector)
+
+    # --- frame support ---
+
+    async def frames(self):
+        page = self._require_page()
+        result = []
+        for f in page.frames:
+            result.append({
+                "name": f.name,
+                "url": f.url,
+                "is_detached": f.is_detached(),
+            })
+        return result
+
+    async def frame_evaluate(self, expression, *, name=None, url=None):
+        page = self._require_page()
+        frame = None
+        if name:
+            frame = page.frame(name=name)
+        elif url:
+            frame = page.frame(url=url)
+        if not frame:
+            raise RuntimeError("frame not found")
+        return await frame.evaluate(expression)
+
+    async def frame_click(self, selector, *, name=None, url=None):
+        page = self._require_page()
+        if name:
+            frame = page.frame(name=name)
+        elif url:
+            frame = page.frame(url=url)
+        else:
+            raise RuntimeError("specify frame name or url")
+        if not frame:
+            raise RuntimeError("frame not found")
+        await frame.click(selector)
+        return await self.page_state()
+
+    async def frame_fill(self, selector, value, *, name=None, url=None):
+        page = self._require_page()
+        if name:
+            frame = page.frame(name=name)
+        elif url:
+            frame = page.frame(url=url)
+        else:
+            raise RuntimeError("specify frame name or url")
+        if not frame:
+            raise RuntimeError("frame not found")
+        await frame.fill(selector, value)
+        return await self.page_state()
+
+    async def frame_content(self, *, name=None, url=None):
+        page = self._require_page()
+        if name:
+            frame = page.frame(name=name)
+        elif url:
+            frame = page.frame(url=url)
+        else:
+            raise RuntimeError("specify frame name or url")
+        if not frame:
+            raise RuntimeError("frame not found")
+        return await frame.content()
+
+    # --- locator helpers ---
+
+    async def query(self, selector, *, text=None, role=None, label=None,
+                    placeholder=None, alt_text=None, title=None, test_id=None):
+        page = self._require_page()
+        if role:
+            loc = page.get_by_role(role, name=text)
+        elif label:
+            loc = page.get_by_label(label)
+        elif placeholder:
+            loc = page.get_by_placeholder(placeholder)
+        elif alt_text:
+            loc = page.get_by_alt_text(alt_text)
+        elif title:
+            loc = page.get_by_title(title)
+        elif test_id:
+            loc = page.get_by_test_id(test_id)
+        elif text:
+            loc = page.get_by_text(text)
+        elif selector:
+            loc = page.locator(selector)
+        else:
+            raise RuntimeError("specify at least one locator parameter")
+        count = await loc.count()
+        results = []
+        for i in range(min(count, 50)):
+            el = loc.nth(i)
+            results.append({
+                "index": i,
+                "visible": await el.is_visible(),
+                "text": (await el.text_content() or "")[:200],
+                "tag": await el.evaluate("el => el.tagName.toLowerCase()"),
+            })
+        return results
+
+    async def locator_click(self, *, text=None, role=None, name=None,
+                            label=None, nth=0):
+        page = self._require_page()
+        if role:
+            loc = page.get_by_role(role, name=name)
+        elif label:
+            loc = page.get_by_label(label)
+        elif text:
+            loc = page.get_by_text(text)
+        else:
+            raise RuntimeError("specify text, role, or label")
+        await loc.nth(nth).click()
+        return await self.page_state()
+
+    async def locator_fill(self, value, *, label=None, placeholder=None,
+                           role=None, name=None, nth=0):
+        page = self._require_page()
+        if label:
+            loc = page.get_by_label(label)
+        elif placeholder:
+            loc = page.get_by_placeholder(placeholder)
+        elif role:
+            loc = page.get_by_role(role, name=name)
+        else:
+            raise RuntimeError("specify label, placeholder, or role")
+        await loc.nth(nth).fill(value)
+        return await self.page_state()
+
+    # --- advanced waits ---
+
+    async def wait_for_function(self, expression, *, timeout=30000):
+        page = self._require_page()
+        await page.wait_for_function(expression, timeout=timeout)
+        return await self.page_state()
+
+    async def wait_for_load_state(self, state="load", *, timeout=30000):
+        page = self._require_page()
+        await page.wait_for_load_state(state, timeout=timeout)
+        return await self.page_state()
+
+    async def wait_for_response(self, url_glob, *, timeout=30000):
+        page = self._require_page()
+        resp = await page.wait_for_response(url_glob, timeout=timeout)
+        return {
+            "url": resp.url,
+            "status": resp.status,
+            "headers": dict(resp.headers),
+        }
+
+    async def wait_for_request(self, url_glob, *, timeout=30000):
+        page = self._require_page()
+        req = await page.wait_for_request(url_glob, timeout=timeout)
+        return {
+            "url": req.url,
+            "method": req.method,
+            "headers": dict(req.headers),
+            "post_data": req.post_data,
+        }
+
+    # --- popup / new tab handling ---
+
+    async def expect_popup(self, action_selector, *, click_action=True):
+        page = self._require_page()
+        async with page.expect_popup() as popup_info:
+            if click_action:
+                await page.click(action_selector)
+        popup = popup_info.value
+        self._pages.append(popup)
+        self._popup_pages.append(popup)
+        if self.context:
+            self.context.hook_page(popup)
+        return {
+            "url": popup.url,
+            "title": await popup.title(),
+            "page_index": len(self._pages) - 1,
+        }
+
+    async def switch_page(self, index):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        pages = [p for p in self._pages if not p.is_closed()]
+        if index < 0 or index >= len(pages):
+            raise RuntimeError(f"page index {index} out of range (0-{len(pages)-1})")
+        target = pages[index]
+        self._pages.remove(target)
+        self._pages.append(target)
+        await target.bring_to_front()
+        return await self.page_state()
+
+    async def pages(self):
+        if not self._context:
+            return []
+        result = []
+        for i, p in enumerate(self._pages):
+            if p.is_closed():
+                continue
+            result.append({
+                "index": i,
+                "url": p.url,
+                "title": await p.title(),
+            })
+        return result
+
+    async def close_page(self, index=None):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        pages = [p for p in self._pages if not p.is_closed()]
+        if not pages:
+            return
+        if index is None:
+            index = len(pages) - 1
+        if index < 0 or index >= len(pages):
+            raise RuntimeError(f"page index {index} out of range")
+        target = pages[index]
+        await target.close()
+        return await self.page_state()
+
+    # --- download handling ---
+
+    async def expect_download(self, action_selector, *, save_path=None):
+        page = self._require_page()
+        async with page.expect_download() as dl_info:
+            await page.click(action_selector)
+        download = dl_info.value
+        result = {
+            "suggested_filename": download.suggested_filename,
+            "url": download.url,
+        }
+        if save_path:
+            await download.save_as(save_path)
+            result["saved_to"] = save_path
+        else:
+            path = await download.path()
+            result["temp_path"] = str(path) if path else None
+        return result
+
+    # --- dialog handling ---
+
+    def handle_dialog(self, action="dismiss", prompt_text=None):
+        async def handler(dialog):
+            if action == "accept":
+                if prompt_text is not None:
+                    await dialog.accept(prompt_text)
+                else:
+                    await dialog.accept()
+            else:
+                await dialog.dismiss()
+
+        if self._dialog_handler:
+            for page in self._pages:
+                if not page.is_closed():
+                    page.remove_listener("dialog", self._dialog_handler)
+
+        self._dialog_handler = handler
+        for page in self._pages:
+            if not page.is_closed():
+                page.on("dialog", handler)
+
+    # --- page manipulation ---
+
+    async def set_content(self, html, *, wait_until="load"):
+        page = self._require_page()
+        await page.set_content(html, wait_until=wait_until)
+        return await self.page_state()
+
+    async def set_viewport_size(self, width, height):
+        page = self._require_page()
+        await page.set_viewport_size({"width": width, "height": height})
+        return {"width": width, "height": height}
+
+    async def emulate_media(self, *, media=None, color_scheme=None,
+                            reduced_motion=None):
+        page = self._require_page()
+        kwargs = {}
+        if media is not None:
+            kwargs["media"] = media
+        if color_scheme is not None:
+            kwargs["color_scheme"] = color_scheme
+        if reduced_motion is not None:
+            kwargs["reduced_motion"] = reduced_motion
+        await page.emulate_media(**kwargs)
+
+    async def bring_to_front(self):
+        page = self._require_page()
+        await page.bring_to_front()
+
+    async def add_script(self, *, url=None, content=None):
+        page = self._require_page()
+        kwargs = {}
+        if url:
+            kwargs["url"] = url
+        if content:
+            kwargs["content"] = content
+        await page.add_script_tag(**kwargs)
+
+    async def add_style(self, *, url=None, content=None):
+        page = self._require_page()
+        kwargs = {}
+        if url:
+            kwargs["url"] = url
+        if content:
+            kwargs["content"] = content
+        await page.add_style_tag(**kwargs)
+
+    async def add_init_script(self, script):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.add_init_script(script)
+
+    async def expose_function(self, name, callback):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.expose_function(name, callback)
+
+    # --- context-level ---
+
+    async def set_offline(self, offline):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.set_offline(offline)
+
+    async def set_geolocation(self, latitude, longitude, *, accuracy=None):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        geo = {"latitude": latitude, "longitude": longitude}
+        if accuracy is not None:
+            geo["accuracy"] = accuracy
+        await self._context.set_geolocation(geo)
+
+    async def grant_permissions(self, permissions):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.grant_permissions(permissions)
+
+    async def clear_permissions(self):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.clear_permissions()
+
+    # --- tracing ---
+
+    async def start_tracing(self, *, screenshots=True, snapshots=True,
+                            sources=False):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.tracing.start(
+            screenshots=screenshots, snapshots=snapshots, sources=sources)
+
+    async def stop_tracing(self, *, path=None):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        trace_path = path or os.path.join(self.profile_dir, "trace.zip")
+        await self._context.tracing.stop(path=trace_path)
+        return trace_path
+
+    # --- pdf ---
+
+    async def pdf(self, *, path=None, format=None, landscape=False,
+                  print_background=True):
+        page = self._require_page()
+        kwargs = {"print_background": print_background}
+        if path:
+            kwargs["path"] = path
+        if format:
+            kwargs["format"] = format
+        if landscape:
+            kwargs["landscape"] = landscape
+        return await page.pdf(**kwargs)
+
+    # --- response mocking ---
+
+    async def mock_response(self, pattern, *, status=200, headers=None,
+                            body="", content_type="text/plain"):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        mock_headers = {"content-type": content_type}
+        if headers:
+            mock_headers.update(headers)
+
+        async def handler(route):
+            await route.fulfill(
+                status=status,
+                headers=mock_headers,
+                body=body,
+            )
+
+        await self.intercept(pattern, handler)
+
+    async def route_from_har(self, har_path, *, url=None, update=False,
+                             not_found="abort"):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        kwargs = {"not_found": not_found}
+        if url:
+            kwargs["url"] = url
+        if update:
+            kwargs["update"] = update
+        await self._context.route_from_har(har_path, **kwargs)
+
+    # --- request body modification ---
+
+    async def modify_request(self, pattern, *, headers=None, post_data=None,
+                             method=None):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+
+        async def handler(route):
+            kwargs = {}
+            if headers:
+                kwargs["headers"] = {**route.request.headers, **headers}
+            if post_data is not None:
+                kwargs["post_data"] = post_data
+            if method:
+                kwargs["method"] = method
+            await route.continue_(**kwargs)
+
+        await self.intercept(pattern, handler)
+
+    # --- mouse / keyboard ---
+
+    async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
+        page = self._require_page()
+        await page.mouse.click(x, y, button=button, click_count=click_count,
+                               delay=delay)
+        return await self.page_state()
+
+    async def mouse_dblclick(self, x, y, *, button="left", delay=0):
+        page = self._require_page()
+        await page.mouse.dblclick(x, y, button=button, delay=delay)
+        return await self.page_state()
+
+    async def mouse_move(self, x, y, *, steps=1):
+        page = self._require_page()
+        await page.mouse.move(x, y, steps=steps)
+
+    async def mouse_down(self, *, button="left"):
+        page = self._require_page()
+        await page.mouse.down(button=button)
+
+    async def mouse_up(self, *, button="left"):
+        page = self._require_page()
+        await page.mouse.up(button=button)
+
+    async def mouse_wheel(self, delta_x, delta_y):
+        page = self._require_page()
+        await page.mouse.wheel(delta_x, delta_y)
+
+    async def keyboard_press(self, key):
+        page = self._require_page()
+        await page.keyboard.press(key)
+        return await self.page_state()
+
+    async def keyboard_type(self, text, *, delay=0):
+        page = self._require_page()
+        await page.keyboard.type(text, delay=delay)
+        return await self.page_state()
+
+    async def keyboard_down(self, key):
+        page = self._require_page()
+        await page.keyboard.down(key)
+
+    async def keyboard_up(self, key):
+        page = self._require_page()
+        await page.keyboard.up(key)
+
+    async def keyboard_insert_text(self, text):
+        page = self._require_page()
+        await page.keyboard.insert_text(text)
+
+    # --- cdp ---
+
+    async def cdp_send(self, method, params=None):
+        if not self._cdp_session:
+            page = self._require_page()
+            self._cdp_session = await self._context.new_cdp_session(page)
+        return await self._cdp_session.send(method, params or {})
+
+    async def cdp_close(self):
+        if self._cdp_session:
+            await self._cdp_session.detach()
+            self._cdp_session = None
+
     def pause(self, reason="manual"):
         if self.state == SessionState.PAUSED:
             return
@@ -562,6 +1208,12 @@ class Session:
         await self._context.storage_state(path=path)
 
     async def close(self):
+        if self._cdp_session:
+            try:
+                await self._cdp_session.detach()
+            except Exception:
+                pass
+            self._cdp_session = None
         if self._context:
             try:
                 await self._context.close()
@@ -569,6 +1221,10 @@ class Session:
                 pass
             self._context = None
             self._pages = []
+            self._popup_pages = []
+            self._downloads = []
+            self._dialog_handler = None
+            self._pending_dialog = None
             self._launched_at = None
             if self.state != SessionState.PAUSED:
                 self.state = SessionState.HIBERNATED

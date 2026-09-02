@@ -13,7 +13,7 @@ _TEST_SOCK = os.path.expanduser("~/.hutch/test-daemon.sock")
 @pytest_asyncio.fixture
 async def daemon():
     if os.path.isdir(_TEST_BASE):
-        shutil.rmtree(_TEST_BASE)
+        shutil.rmtree(_TEST_BASE, ignore_errors=True)
     os.makedirs(_TEST_BASE, exist_ok=True)
 
     d = HutchDaemon(
@@ -27,14 +27,14 @@ async def daemon():
     await d.stop()
 
     if os.path.isdir(_TEST_BASE):
-        shutil.rmtree(_TEST_BASE)
+        shutil.rmtree(_TEST_BASE, ignore_errors=True)
     artifacts_dir = os.path.expanduser("~/.hutch/artifacts")
     for name in ("d-ping", "d-create", "d-snap", "d-nav", "d-net",
                  "d-console", "d-eval", "d-ss", "d-har", "d-notes",
                  "d-health", "d-destroy", "d-multi-a", "d-multi-b"):
         p = os.path.join(artifacts_dir, name)
         if os.path.isdir(p):
-            shutil.rmtree(p)
+            shutil.rmtree(p, ignore_errors=True)
 
 
 @pytest_asyncio.fixture

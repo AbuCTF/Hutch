@@ -153,6 +153,385 @@ class SessionHandle:
     async def destroy(self):
         return await self._client._call("destroy", {"name": self.name})
 
+    # --- navigation ---
+
+    async def go_back(self, *, wait_until="load"):
+        return await self._client._call("go_back", {
+            "name": self.name, "wait_until": wait_until})
+
+    async def go_forward(self, *, wait_until="load"):
+        return await self._client._call("go_forward", {
+            "name": self.name, "wait_until": wait_until})
+
+    async def reload(self, *, wait_until="load"):
+        return await self._client._call("reload", {
+            "name": self.name, "wait_until": wait_until})
+
+    # --- interaction ---
+
+    async def hover(self, selector):
+        return await self._client._call("hover", {
+            "name": self.name, "selector": selector})
+
+    async def dblclick(self, selector, *, wait_after="networkidle", timeout=5000):
+        return await self._client._call("dblclick", {
+            "name": self.name, "selector": selector,
+            "wait_after": wait_after, "timeout": timeout})
+
+    async def focus(self, selector):
+        return await self._client._call("focus", {
+            "name": self.name, "selector": selector})
+
+    async def check(self, selector):
+        return await self._client._call("check", {
+            "name": self.name, "selector": selector})
+
+    async def uncheck(self, selector):
+        return await self._client._call("uncheck", {
+            "name": self.name, "selector": selector})
+
+    async def set_checked(self, selector, checked):
+        return await self._client._call("set_checked", {
+            "name": self.name, "selector": selector, "checked": checked})
+
+    async def set_input_files(self, selector, files):
+        return await self._client._call("set_input_files", {
+            "name": self.name, "selector": selector, "files": files})
+
+    async def right_click(self, selector):
+        return await self._client._call("right_click", {
+            "name": self.name, "selector": selector})
+
+    async def scroll(self, *, direction="down", amount=500, selector=None):
+        return await self._client._call("scroll", {
+            "name": self.name, "direction": direction,
+            "amount": amount, "selector": selector})
+
+    async def drag_and_drop(self, source, target):
+        return await self._client._call("drag_and_drop", {
+            "name": self.name, "source": source, "target": target})
+
+    async def tap(self, selector):
+        return await self._client._call("tap", {
+            "name": self.name, "selector": selector})
+
+    async def dispatch_event(self, selector, event_type, event_init=None):
+        return await self._client._call("dispatch_event", {
+            "name": self.name, "selector": selector,
+            "event_type": event_type, "event_init": event_init})
+
+    # --- content extraction ---
+
+    async def content(self):
+        r = await self._client._call("content", {"name": self.name})
+        return r.get("html")
+
+    async def inner_text(self, selector):
+        r = await self._client._call("inner_text", {
+            "name": self.name, "selector": selector})
+        return r.get("text")
+
+    async def inner_html(self, selector):
+        r = await self._client._call("inner_html", {
+            "name": self.name, "selector": selector})
+        return r.get("html")
+
+    async def text_content(self, selector):
+        r = await self._client._call("text_content", {
+            "name": self.name, "selector": selector})
+        return r.get("text")
+
+    async def get_attribute(self, selector, attribute):
+        r = await self._client._call("get_attribute", {
+            "name": self.name, "selector": selector, "attribute": attribute})
+        return r.get("value")
+
+    async def input_value(self, selector):
+        r = await self._client._call("input_value", {
+            "name": self.name, "selector": selector})
+        return r.get("value")
+
+    # --- element state ---
+
+    async def is_visible(self, selector):
+        r = await self._client._call("is_visible", {
+            "name": self.name, "selector": selector})
+        return r.get("visible")
+
+    async def is_checked(self, selector):
+        r = await self._client._call("is_checked", {
+            "name": self.name, "selector": selector})
+        return r.get("checked")
+
+    async def is_enabled(self, selector):
+        r = await self._client._call("is_enabled", {
+            "name": self.name, "selector": selector})
+        return r.get("enabled")
+
+    async def is_hidden(self, selector):
+        r = await self._client._call("is_hidden", {
+            "name": self.name, "selector": selector})
+        return r.get("hidden")
+
+    async def is_editable(self, selector):
+        r = await self._client._call("is_editable", {
+            "name": self.name, "selector": selector})
+        return r.get("editable")
+
+    # --- frames ---
+
+    async def frames(self):
+        return await self._client._call("frames", {"name": self.name})
+
+    async def frame_evaluate(self, expression, *, frame_name=None, frame_url=None):
+        r = await self._client._call("frame_evaluate", {
+            "name": self.name, "expression": expression,
+            "frame_name": frame_name, "frame_url": frame_url})
+        return r.get("result")
+
+    async def frame_click(self, selector, *, frame_name=None, frame_url=None):
+        return await self._client._call("frame_click", {
+            "name": self.name, "selector": selector,
+            "frame_name": frame_name, "frame_url": frame_url})
+
+    async def frame_fill(self, selector, value, *, frame_name=None, frame_url=None):
+        return await self._client._call("frame_fill", {
+            "name": self.name, "selector": selector, "value": value,
+            "frame_name": frame_name, "frame_url": frame_url})
+
+    async def frame_content(self, *, frame_name=None, frame_url=None):
+        r = await self._client._call("frame_content", {
+            "name": self.name, "frame_name": frame_name,
+            "frame_url": frame_url})
+        return r.get("html")
+
+    # --- locator ---
+
+    async def query(self, selector=None, *, text=None, role=None, label=None,
+                    placeholder=None, alt_text=None, title=None, test_id=None):
+        return await self._client._call("query", {
+            "name": self.name, "selector": selector, "text": text,
+            "role": role, "label": label, "placeholder": placeholder,
+            "alt_text": alt_text, "title": title, "test_id": test_id})
+
+    async def locator_click(self, *, text=None, role=None, locator_name=None,
+                            label=None, nth=0):
+        return await self._client._call("locator_click", {
+            "name": self.name, "text": text, "role": role,
+            "locator_name": locator_name, "label": label, "nth": nth})
+
+    async def locator_fill(self, value, *, label=None, placeholder=None,
+                           role=None, locator_name=None, nth=0):
+        return await self._client._call("locator_fill", {
+            "name": self.name, "value": value, "label": label,
+            "placeholder": placeholder, "role": role,
+            "locator_name": locator_name, "nth": nth})
+
+    # --- advanced waits ---
+
+    async def wait_for_function(self, expression, *, timeout=30000):
+        return await self._client._call("wait_for_function", {
+            "name": self.name, "expression": expression, "timeout": timeout})
+
+    async def wait_for_load_state(self, state="load", *, timeout=30000):
+        return await self._client._call("wait_for_load_state", {
+            "name": self.name, "state": state, "timeout": timeout})
+
+    async def wait_for_response(self, url_glob, *, timeout=30000):
+        return await self._client._call("wait_for_response", {
+            "name": self.name, "url_glob": url_glob, "timeout": timeout})
+
+    async def wait_for_request(self, url_glob, *, timeout=30000):
+        return await self._client._call("wait_for_request", {
+            "name": self.name, "url_glob": url_glob, "timeout": timeout})
+
+    # --- tabs/pages ---
+
+    async def pages(self):
+        return await self._client._call("pages", {"name": self.name})
+
+    async def switch_page(self, index):
+        return await self._client._call("switch_page", {
+            "name": self.name, "index": index})
+
+    async def close_page(self, index=None):
+        return await self._client._call("close_page", {
+            "name": self.name, "index": index})
+
+    async def expect_popup(self, selector):
+        return await self._client._call("expect_popup", {
+            "name": self.name, "selector": selector})
+
+    # --- downloads ---
+
+    async def expect_download(self, selector, *, save_path=None):
+        return await self._client._call("expect_download", {
+            "name": self.name, "selector": selector, "save_path": save_path})
+
+    # --- dialog ---
+
+    async def handle_dialog(self, *, action="dismiss", prompt_text=None):
+        return await self._client._call("handle_dialog", {
+            "name": self.name, "action": action, "prompt_text": prompt_text})
+
+    # --- page manipulation ---
+
+    async def set_content(self, html, *, wait_until="load"):
+        return await self._client._call("set_content", {
+            "name": self.name, "html": html, "wait_until": wait_until})
+
+    async def set_viewport_size(self, width, height):
+        return await self._client._call("set_viewport_size", {
+            "name": self.name, "width": width, "height": height})
+
+    async def emulate_media(self, *, media=None, color_scheme=None,
+                            reduced_motion=None):
+        return await self._client._call("emulate_media", {
+            "name": self.name, "media": media, "color_scheme": color_scheme,
+            "reduced_motion": reduced_motion})
+
+    async def add_script(self, *, url=None, content=None):
+        return await self._client._call("add_script", {
+            "name": self.name, "url": url, "content": content})
+
+    async def add_style(self, *, url=None, content=None):
+        return await self._client._call("add_style", {
+            "name": self.name, "url": url, "content": content})
+
+    async def add_init_script(self, script):
+        return await self._client._call("add_init_script", {
+            "name": self.name, "script": script})
+
+    async def bring_to_front(self):
+        return await self._client._call("bring_to_front", {
+            "name": self.name})
+
+    # --- context-level ---
+
+    async def set_offline(self, offline):
+        return await self._client._call("set_offline", {
+            "name": self.name, "offline": offline})
+
+    async def set_geolocation(self, latitude, longitude, *, accuracy=None):
+        return await self._client._call("set_geolocation", {
+            "name": self.name, "latitude": latitude, "longitude": longitude,
+            "accuracy": accuracy})
+
+    async def grant_permissions(self, permissions):
+        return await self._client._call("grant_permissions", {
+            "name": self.name, "permissions": permissions})
+
+    async def clear_permissions(self):
+        return await self._client._call("clear_permissions", {
+            "name": self.name})
+
+    # --- tracing ---
+
+    async def start_tracing(self, *, screenshots=True, snapshots=True,
+                            sources=False):
+        return await self._client._call("start_tracing", {
+            "name": self.name, "screenshots": screenshots,
+            "snapshots": snapshots, "sources": sources})
+
+    async def stop_tracing(self, *, path=None):
+        return await self._client._call("stop_tracing", {
+            "name": self.name, "path": path})
+
+    # --- pdf ---
+
+    async def pdf(self, *, path=None, format=None, landscape=False,
+                  print_background=True):
+        return await self._client._call("pdf", {
+            "name": self.name, "path": path, "format": format,
+            "landscape": landscape, "print_background": print_background})
+
+    # --- mocking ---
+
+    async def mock_response(self, pattern, *, status=200, headers=None,
+                            body="", content_type="text/plain"):
+        return await self._client._call("mock_response", {
+            "name": self.name, "pattern": pattern, "status": status,
+            "headers": headers, "body": body, "content_type": content_type})
+
+    async def route_from_har(self, har_path, *, url=None, update=False,
+                             not_found="abort"):
+        return await self._client._call("route_from_har", {
+            "name": self.name, "har_path": har_path, "url": url,
+            "update": update, "not_found": not_found})
+
+    async def modify_request(self, pattern, *, headers=None, post_data=None,
+                             method=None):
+        return await self._client._call("modify_request", {
+            "name": self.name, "pattern": pattern, "headers": headers,
+            "post_data": post_data, "method": method})
+
+    # --- mouse/keyboard ---
+
+    async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
+        return await self._client._call("mouse_click", {
+            "name": self.name, "x": x, "y": y, "button": button,
+            "click_count": click_count, "delay": delay})
+
+    async def mouse_dblclick(self, x, y, *, button="left"):
+        return await self._client._call("mouse_dblclick", {
+            "name": self.name, "x": x, "y": y, "button": button})
+
+    async def mouse_move(self, x, y, *, steps=1):
+        return await self._client._call("mouse_move", {
+            "name": self.name, "x": x, "y": y, "steps": steps})
+
+    async def mouse_wheel(self, delta_x=0, delta_y=0):
+        return await self._client._call("mouse_wheel", {
+            "name": self.name, "delta_x": delta_x, "delta_y": delta_y})
+
+    async def keyboard_press(self, key):
+        return await self._client._call("keyboard_press", {
+            "name": self.name, "key": key})
+
+    async def keyboard_type(self, text, *, delay=0):
+        return await self._client._call("keyboard_type", {
+            "name": self.name, "text": text, "delay": delay})
+
+    # --- cdp ---
+
+    async def cdp_send(self, method, params=None):
+        r = await self._client._call("cdp_send", {
+            "name": self.name, "method": method, "params": params})
+        return r.get("result")
+
+    async def cdp_close(self):
+        return await self._client._call("cdp_close", {"name": self.name})
+
+    # --- raw mouse ---
+
+    async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
+        return await self._client._call("mouse_click", {
+            "name": self.name, "x": x, "y": y, "button": button,
+            "click_count": click_count, "delay": delay})
+
+    async def mouse_dblclick(self, x, y, *, button="left", delay=0):
+        return await self._client._call("mouse_dblclick", {
+            "name": self.name, "x": x, "y": y, "button": button,
+            "delay": delay})
+
+    async def mouse_move(self, x, y, *, steps=1):
+        return await self._client._call("mouse_move", {
+            "name": self.name, "x": x, "y": y, "steps": steps})
+
+    async def mouse_wheel(self, delta_x, delta_y):
+        return await self._client._call("mouse_wheel", {
+            "name": self.name, "delta_x": delta_x, "delta_y": delta_y})
+
+    # --- raw keyboard ---
+
+    async def keyboard_press(self, key):
+        return await self._client._call("keyboard_press", {
+            "name": self.name, "key": key})
+
+    async def keyboard_type(self, text, *, delay=0):
+        return await self._client._call("keyboard_type", {
+            "name": self.name, "text": text, "delay": delay})
+
     def __repr__(self):
         return f"<SessionHandle '{self.name}'>"
 

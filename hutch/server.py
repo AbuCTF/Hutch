@@ -189,6 +189,92 @@ class HutchDaemon:
             "handoff": self._rpc_handoff,
             "status": self._rpc_status,
             "ping": self._rpc_ping,
+            # navigation
+            "go_back": self._rpc_go_back,
+            "go_forward": self._rpc_go_forward,
+            "reload": self._rpc_reload,
+            # interaction
+            "hover": self._rpc_hover,
+            "dblclick": self._rpc_dblclick,
+            "focus": self._rpc_focus,
+            "check": self._rpc_check,
+            "uncheck": self._rpc_uncheck,
+            "set_checked": self._rpc_set_checked,
+            "set_input_files": self._rpc_set_input_files,
+            "drag_and_drop": self._rpc_drag_and_drop,
+            "right_click": self._rpc_right_click,
+            "scroll": self._rpc_scroll,
+            "tap": self._rpc_tap,
+            "dispatch_event": self._rpc_dispatch_event,
+            # content
+            "content": self._rpc_content,
+            "inner_text": self._rpc_inner_text,
+            "inner_html": self._rpc_inner_html,
+            "text_content": self._rpc_text_content,
+            "get_attribute": self._rpc_get_attribute,
+            "input_value": self._rpc_input_value,
+            # element state
+            "is_visible": self._rpc_is_visible,
+            "is_checked": self._rpc_is_checked,
+            "is_enabled": self._rpc_is_enabled,
+            "is_hidden": self._rpc_is_hidden,
+            "is_editable": self._rpc_is_editable,
+            # frames
+            "frames": self._rpc_frames,
+            "frame_evaluate": self._rpc_frame_evaluate,
+            "frame_click": self._rpc_frame_click,
+            "frame_fill": self._rpc_frame_fill,
+            "frame_content": self._rpc_frame_content,
+            # locator
+            "query": self._rpc_query,
+            "locator_click": self._rpc_locator_click,
+            "locator_fill": self._rpc_locator_fill,
+            # waits
+            "wait_for_function": self._rpc_wait_for_function,
+            "wait_for_load_state": self._rpc_wait_for_load_state,
+            "wait_for_response": self._rpc_wait_for_response,
+            "wait_for_request": self._rpc_wait_for_request,
+            # tabs/pages
+            "pages": self._rpc_pages,
+            "switch_page": self._rpc_switch_page,
+            "close_page": self._rpc_close_page,
+            "expect_popup": self._rpc_expect_popup,
+            # downloads
+            "expect_download": self._rpc_expect_download,
+            # dialog
+            "handle_dialog": self._rpc_handle_dialog,
+            # page manipulation
+            "set_content": self._rpc_set_content,
+            "set_viewport_size": self._rpc_set_viewport_size,
+            "emulate_media": self._rpc_emulate_media,
+            "add_script": self._rpc_add_script,
+            "add_style": self._rpc_add_style,
+            "add_init_script": self._rpc_add_init_script,
+            "bring_to_front": self._rpc_bring_to_front,
+            # context-level
+            "set_offline": self._rpc_set_offline,
+            "set_geolocation": self._rpc_set_geolocation,
+            "grant_permissions": self._rpc_grant_permissions,
+            "clear_permissions": self._rpc_clear_permissions,
+            # tracing
+            "start_tracing": self._rpc_start_tracing,
+            "stop_tracing": self._rpc_stop_tracing,
+            # pdf
+            "pdf": self._rpc_pdf,
+            # mocking
+            "mock_response": self._rpc_mock_response,
+            "route_from_har": self._rpc_route_from_har,
+            "modify_request": self._rpc_modify_request,
+            # mouse/keyboard
+            "mouse_click": self._rpc_mouse_click,
+            "mouse_dblclick": self._rpc_mouse_dblclick,
+            "mouse_move": self._rpc_mouse_move,
+            "mouse_wheel": self._rpc_mouse_wheel,
+            "keyboard_press": self._rpc_keyboard_press,
+            "keyboard_type": self._rpc_keyboard_type,
+            # cdp
+            "cdp_send": self._rpc_cdp_send,
+            "cdp_close": self._rpc_cdp_close,
         }
         handler = handlers.get(method)
         if not handler:
@@ -501,6 +587,410 @@ class HutchDaemon:
         }
         return pool_status
 
+    # --- navigation ---
+
+    async def _rpc_go_back(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.go_back(wait_until=params.get("wait_until", "load"))
+
+    async def _rpc_go_forward(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.go_forward(wait_until=params.get("wait_until", "load"))
+
+    async def _rpc_reload(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.reload(wait_until=params.get("wait_until", "load"))
+
+    # --- interaction ---
+
+    async def _rpc_hover(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.hover(params["selector"])
+
+    async def _rpc_dblclick(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.dblclick(params["selector"],
+                                wait_after=params.get("wait_after", "networkidle"),
+                                timeout=params.get("timeout", 5000))
+
+    async def _rpc_focus(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.focus(params["selector"])
+        return {"focused": params["selector"]}
+
+    async def _rpc_check(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.check(params["selector"])
+
+    async def _rpc_uncheck(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.uncheck(params["selector"])
+
+    async def _rpc_set_checked(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.set_checked(params["selector"], params["checked"])
+
+    async def _rpc_set_input_files(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.set_input_files(params["selector"], params["files"])
+
+    async def _rpc_drag_and_drop(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.drag_and_drop(params["source"], params["target"])
+
+    async def _rpc_right_click(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.right_click(params["selector"])
+
+    async def _rpc_scroll(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.scroll(
+            direction=params.get("direction", "down"),
+            amount=params.get("amount", 500),
+            selector=params.get("selector"))
+
+    async def _rpc_tap(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.tap(params["selector"])
+
+    async def _rpc_dispatch_event(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.dispatch_event(params["selector"], params["event_type"],
+                               params.get("event_init"))
+        return {"dispatched": params["event_type"]}
+
+    # --- content extraction ---
+
+    async def _rpc_content(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"html": await s.content()}
+
+    async def _rpc_inner_text(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"text": await s.inner_text(params["selector"])}
+
+    async def _rpc_inner_html(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"html": await s.inner_html(params["selector"])}
+
+    async def _rpc_text_content(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"text": await s.text_content(params["selector"])}
+
+    async def _rpc_get_attribute(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"value": await s.get_attribute(params["selector"], params["attribute"])}
+
+    async def _rpc_input_value(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"value": await s.input_value(params["selector"])}
+
+    # --- element state ---
+
+    async def _rpc_is_visible(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"visible": await s.is_visible(params["selector"])}
+
+    async def _rpc_is_checked(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"checked": await s.is_checked(params["selector"])}
+
+    async def _rpc_is_enabled(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"enabled": await s.is_enabled(params["selector"])}
+
+    async def _rpc_is_hidden(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"hidden": await s.is_hidden(params["selector"])}
+
+    async def _rpc_is_editable(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"editable": await s.is_editable(params["selector"])}
+
+    # --- frames ---
+
+    async def _rpc_frames(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.frames()
+
+    async def _rpc_frame_evaluate(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        result = await s.frame_evaluate(params["expression"],
+                                        name=params.get("frame_name"),
+                                        url=params.get("frame_url"))
+        return {"result": result}
+
+    async def _rpc_frame_click(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.frame_click(params["selector"],
+                                   name=params.get("frame_name"),
+                                   url=params.get("frame_url"))
+
+    async def _rpc_frame_fill(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.frame_fill(params["selector"], params["value"],
+                                  name=params.get("frame_name"),
+                                  url=params.get("frame_url"))
+
+    async def _rpc_frame_content(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"html": await s.frame_content(name=params.get("frame_name"),
+                                              url=params.get("frame_url"))}
+
+    # --- locator ---
+
+    async def _rpc_query(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.query(
+            params.get("selector"),
+            text=params.get("text"),
+            role=params.get("role"),
+            label=params.get("label"),
+            placeholder=params.get("placeholder"),
+            alt_text=params.get("alt_text"),
+            title=params.get("title"),
+            test_id=params.get("test_id"),
+        )
+
+    async def _rpc_locator_click(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.locator_click(
+            text=params.get("text"),
+            role=params.get("role"),
+            name=params.get("locator_name"),
+            label=params.get("label"),
+            nth=params.get("nth", 0),
+        )
+
+    async def _rpc_locator_fill(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.locator_fill(
+            params["value"],
+            label=params.get("label"),
+            placeholder=params.get("placeholder"),
+            role=params.get("role"),
+            name=params.get("locator_name"),
+            nth=params.get("nth", 0),
+        )
+
+    # --- advanced waits ---
+
+    async def _rpc_wait_for_function(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.wait_for_function(params["expression"],
+                                         timeout=params.get("timeout", 30000))
+
+    async def _rpc_wait_for_load_state(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.wait_for_load_state(params.get("state", "load"),
+                                           timeout=params.get("timeout", 30000))
+
+    async def _rpc_wait_for_response(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.wait_for_response(params["url_glob"],
+                                         timeout=params.get("timeout", 30000))
+
+    async def _rpc_wait_for_request(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.wait_for_request(params["url_glob"],
+                                        timeout=params.get("timeout", 30000))
+
+    # --- tabs/pages ---
+
+    async def _rpc_pages(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.pages()
+
+    async def _rpc_switch_page(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.switch_page(params["index"])
+
+    async def _rpc_close_page(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.close_page(params.get("index"))
+
+    async def _rpc_expect_popup(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.expect_popup(params["selector"])
+
+    # --- downloads ---
+
+    async def _rpc_expect_download(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.expect_download(params["selector"],
+                                       save_path=params.get("save_path"))
+
+    # --- dialog ---
+
+    async def _rpc_handle_dialog(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        s.handle_dialog(action=params.get("action", "dismiss"),
+                        prompt_text=params.get("prompt_text"))
+        return {"handler_set": params.get("action", "dismiss")}
+
+    # --- page manipulation ---
+
+    async def _rpc_set_content(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.set_content(params["html"],
+                                   wait_until=params.get("wait_until", "load"))
+
+    async def _rpc_set_viewport_size(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.set_viewport_size(params["width"], params["height"])
+
+    async def _rpc_emulate_media(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.emulate_media(media=params.get("media"),
+                              color_scheme=params.get("color_scheme"),
+                              reduced_motion=params.get("reduced_motion"))
+        return {"emulated": True}
+
+    async def _rpc_add_script(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.add_script(url=params.get("url"), content=params.get("content"))
+        return {"added": "script"}
+
+    async def _rpc_add_style(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.add_style(url=params.get("url"), content=params.get("content"))
+        return {"added": "style"}
+
+    async def _rpc_add_init_script(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.add_init_script(params["script"])
+        return {"added": "init_script"}
+
+    async def _rpc_bring_to_front(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.bring_to_front()
+        return {"brought_to_front": True}
+
+    # --- context-level ---
+
+    async def _rpc_set_offline(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.set_offline(params["offline"])
+        return {"offline": params["offline"]}
+
+    async def _rpc_set_geolocation(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.set_geolocation(params["latitude"], params["longitude"],
+                                accuracy=params.get("accuracy"))
+        return {"set": True}
+
+    async def _rpc_grant_permissions(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.grant_permissions(params["permissions"])
+        return {"granted": params["permissions"]}
+
+    async def _rpc_clear_permissions(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.clear_permissions()
+        return {"cleared": True}
+
+    # --- tracing ---
+
+    async def _rpc_start_tracing(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.start_tracing(screenshots=params.get("screenshots", True),
+                              snapshots=params.get("snapshots", True),
+                              sources=params.get("sources", False))
+        return {"tracing": "started"}
+
+    async def _rpc_stop_tracing(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        path = await s.stop_tracing(path=params.get("path"))
+        return {"path": path}
+
+    # --- pdf ---
+
+    async def _rpc_pdf(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        path = params.get("path")
+        if not path:
+            path = os.path.join(self.artifacts._session_dir(params["name"], "pdf"),
+                                f"{int(time.time())}.pdf")
+        await s.pdf(path=path, format=params.get("format"),
+                    landscape=params.get("landscape", False),
+                    print_background=params.get("print_background", True))
+        return {"path": path}
+
+    # --- mocking ---
+
+    async def _rpc_mock_response(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.mock_response(params["pattern"],
+                              status=params.get("status", 200),
+                              headers=params.get("headers"),
+                              body=params.get("body", ""),
+                              content_type=params.get("content_type", "text/plain"))
+        return {"mocked": params["pattern"]}
+
+    async def _rpc_route_from_har(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.route_from_har(params["har_path"],
+                               url=params.get("url"),
+                               update=params.get("update", False),
+                               not_found=params.get("not_found", "abort"))
+        return {"routed": params["har_path"]}
+
+    async def _rpc_modify_request(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.modify_request(params["pattern"],
+                               headers=params.get("headers"),
+                               post_data=params.get("post_data"),
+                               method=params.get("method"))
+        return {"intercepted": params["pattern"]}
+
+    # --- mouse/keyboard ---
+
+    async def _rpc_mouse_click(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.mouse_click(
+            params["x"], params["y"],
+            button=params.get("button", "left"),
+            click_count=params.get("click_count", 1),
+            delay=params.get("delay", 0))
+
+    async def _rpc_mouse_dblclick(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.mouse_dblclick(
+            params["x"], params["y"],
+            button=params.get("button", "left"))
+
+    async def _rpc_mouse_move(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.mouse_move(params["x"], params["y"],
+                           steps=params.get("steps", 1))
+        return {"moved": [params["x"], params["y"]]}
+
+    async def _rpc_mouse_wheel(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        await s.mouse_wheel(params.get("delta_x", 0), params.get("delta_y", 0))
+        return {"scrolled": True}
+
+    async def _rpc_keyboard_press(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.keyboard_press(params["key"])
+
+    async def _rpc_keyboard_type(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.keyboard_type(params["text"],
+                                     delay=params.get("delay", 0))
+
+    # --- cdp ---
+
+    async def _rpc_cdp_send(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        result = await s.cdp_send(params["method"], params.get("params"))
+        return {"result": result}
+
+    async def _rpc_cdp_close(self, params):
+        s = await self.pool.get(params["name"])
+        await s.cdp_close()
+        return {"closed": True}
+
 
 def _session_info(s):
     return {
@@ -542,7 +1032,7 @@ def _build_har(entries):
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "hutch", "version": "0.2.0"},
+            "creator": {"name": "hutch", "version": "0.5.0"},
             "entries": har_entries,
         }
     }
