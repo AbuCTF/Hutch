@@ -43,7 +43,7 @@ hutch serve
 hutch serve --idle-timeout 0
 ```
 
-#### Python — direct
+#### Direct Client
 
 ```python
 from hutch import Pool, generate, generate_for_program
@@ -96,7 +96,7 @@ async with Pool() as pool:
     s = await pool.get("target-a", launch=True)
 ```
 
-#### Python — daemon client
+#### Daemon Client
 
 ```python
 from hutch import connect
@@ -122,28 +122,6 @@ async with HutchClient() as client:
     if info["state"] == "paused":
         # solve captcha in headed browser...
         await s.resume()
-```
-
-#### Multi-session IDOR testing
-
-```python
-async with Pool() as pool:
-    await pool.create("user-a", fingerprint=generate_for_program("target"))
-    await pool.create("user-b", fingerprint=generate_for_program("target"))
-
-    # login each session with different accounts...
-
-    # parallel navigation — same endpoint, different auth
-    results = await pool.parallel_goto(
-        ["user-a", "user-b"],
-        "https://target.com/api/profile/123"
-    )
-
-    # compare responses across sessions
-    comparison = await pool.compare(
-        ["user-a", "user-b"],
-        "https://target.com/api/admin/users"
-    )
 ```
 
 ### Features

@@ -34,8 +34,28 @@ class CaidoClient:
     async def connect(self):
         self._token = self._resolve_token()
         self._session = aiohttp.ClientSession()
-        info = await self.instance_info()
+        try:
+            info = await self.instance_info()
+        except CaidoError as e:
+            if "INVALID_TOKEN" in str(e) or "AUTHORIZATION" in str(e):
+                await self._login_as_guest()
+                info = await self.instance_info()
+            else:
+                raise
         return info
+
+    async def _login_as_guest(self):
+        url = urljoin(self.config.url, "/graphql")
+        payload = {"query": """
+            mutation { loginAsGuest { token { accessToken expiresAt } } }
+        """}
+        async with self._session.post(url, json=payload,
+                                       headers={"Content-Type": "application/json"}) as resp:
+            data = await resp.json()
+            if errors := data.get("errors"):
+                raise CaidoError(f"guest login failed: {errors[0]['message']}")
+            token_data = data["data"]["loginAsGuest"]["token"]
+            self._token = token_data["accessToken"]
 
     async def close(self):
         if self._session:
@@ -68,7 +88,7 @@ class CaidoClient:
             h["Authorization"] = f"Bearer {self._token}"
         return h
 
-    async def _gql(self, query, variables=None):
+    async def _gql(self, query, variables=None, *, _retried=False):
         if not self._session:
             raise CaidoError("not connected — call connect() first")
         url = urljoin(self.config.url, "/graphql")
@@ -84,6 +104,10 @@ class CaidoClient:
                 raise CaidoError(f"graphql error {resp.status}: {text}")
             data = await resp.json()
             if errors := data.get("errors"):
+                ext = errors[0].get("extensions", {}).get("CAIDO", {})
+                if not _retried and ext.get("code") == "AUTHORIZATION":
+                    await self._login_as_guest()
+                    return await self._gql(query, variables, _retried=True)
                 raise CaidoError(f"graphql: {errors[0]['message']}")
             return data.get("data", {})
 
