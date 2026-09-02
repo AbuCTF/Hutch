@@ -161,6 +161,10 @@ class Session:
         kwargs = self._launch_args()
         self._context = await playwright.chromium.launch_persistent_context(**kwargs)
         self._launched_at = time.time()
+        if self.fingerprint.platform:
+            await self._context.add_init_script(
+                f"Object.defineProperty(navigator, 'platform', {{get: () => '{self.fingerprint.platform}'}})"
+            )
         if self.stealth:
             from .stealth import apply_stealth
             await apply_stealth(self._context)

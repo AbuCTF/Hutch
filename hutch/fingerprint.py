@@ -54,6 +54,20 @@ _PRESETS = [
     },
 ]
 
+_TIMEZONES = [
+    "America/New_York", "America/Chicago", "America/Denver",
+    "America/Los_Angeles", "America/Phoenix", "America/Anchorage",
+    "Europe/London", "Europe/Berlin", "Europe/Paris",
+    "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata",
+    "Australia/Sydney", "Pacific/Auckland",
+]
+
+_LOCALES = [
+    "en-US", "en-GB", "en-AU", "en-CA",
+    "de-DE", "fr-FR", "ja-JP", "zh-CN",
+    "pt-BR", "es-ES", "ko-KR", "it-IT",
+]
+
 
 def generate(*, preset=None, seed=None, locale=None, timezone=None,
              geolocation=None) -> Fingerprint:
@@ -69,6 +83,11 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
 
     vw, vh = p["viewport"]
     sw, sh = p["screen"]
+
+    if not locale and not preset:
+        locale = rng.choice(_LOCALES)
+    if not timezone and not preset:
+        timezone = rng.choice(_TIMEZONES)
 
     return Fingerprint(
         viewport_width=vw,
