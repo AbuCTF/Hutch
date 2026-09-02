@@ -230,7 +230,7 @@ def main():
             "  presets          list fingerprint presets"
         ),
     )
-    p.add_argument("--version", action="version", version="%(prog)s 0.2.0")
+    p.add_argument("--version", action="version", version="%(prog)s 0.3.1")
     p.add_argument("--base-dir", default=None, metavar="DIR",
                    help="profile storage directory (default: ~/.hutch/profiles)")
     p.add_argument("--max-sessions", type=int, default=5, metavar="N",
