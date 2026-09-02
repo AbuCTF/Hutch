@@ -1,19 +1,3 @@
-"""hutch/cli.py — command-line interface for managing browser sessions.
-
-Usage:
-    hutch create my-session                     # create + launch
-    hutch create my-session --proxy http://127.0.0.1:8081
-    hutch create my-session --preset win-desktop-1080p --headed
-    hutch list                                  # show all sessions
-    hutch status my-session                     # detailed status
-    hutch open my-session https://example.com   # open URL in session
-    hutch screenshot my-session out.png         # capture screenshot
-    hutch auth my-session                       # open headed for manual login
-    hutch close my-session                      # close browser (profile kept)
-    hutch destroy my-session                    # close + delete profile
-    hutch presets                               # list fingerprint presets
-"""
-
 import argparse
 import asyncio
 import sys
@@ -93,7 +77,7 @@ async def cmd_screenshot(pool, args):
     s = await pool.get(args.name, launch=True)
     pages = [p for p in s._pages if not p.is_closed()]
     if not pages:
-        print("no open pages — open a URL first")
+        print("no open pages")
         return
     page = pages[-1]
     await page.screenshot(path=args.output, full_page=args.full_page)
@@ -101,7 +85,6 @@ async def cmd_screenshot(pool, args):
 
 
 async def cmd_auth(pool, args):
-    """Open a headed browser for manual login, then save state."""
     name = args.name
     if name not in pool:
         fp = None
@@ -123,7 +106,7 @@ async def cmd_auth(pool, args):
         page = await s.new_page()
         await page.goto(args.url)
 
-    print(f"browser open for '{name}' — log in manually, then press Enter here to save state")
+    print(f"browser open for '{name}' — log in manually, then press Enter to save state")
     try:
         input()
     except (EOFError, KeyboardInterrupt):
@@ -154,73 +137,61 @@ async def _run(args):
 
 
 def main():
-    p = argparse.ArgumentParser(
-        prog="hutch",
-        description="Hutch — isolated Playwright session manager",
-    )
-    p.add_argument("--base-dir", default=None, help="profile storage dir (default ~/.hutch/profiles)")
-    p.add_argument("--max-sessions", type=int, default=5, help="max simultaneous browsers")
+    p = argparse.ArgumentParser(prog="hutch")
+    p.add_argument("--base-dir", default=None)
+    p.add_argument("--max-sessions", type=int, default=5)
 
     sub = p.add_subparsers(dest="command")
 
-    # create
-    c = sub.add_parser("create", help="create a new session")
+    c = sub.add_parser("create")
     c.add_argument("name")
-    c.add_argument("--proxy", help="proxy URL (e.g. http://127.0.0.1:8081)")
-    c.add_argument("--bypass", help="proxy bypass list")
-    c.add_argument("--preset", help="fingerprint preset name")
-    c.add_argument("--program", help="program name (deterministic fingerprint)")
-    c.add_argument("--locale", help="override locale")
-    c.add_argument("--timezone", help="override timezone")
-    c.add_argument("--headed", action="store_true", help="show browser window")
+    c.add_argument("--proxy")
+    c.add_argument("--bypass")
+    c.add_argument("--preset")
+    c.add_argument("--program")
+    c.add_argument("--locale")
+    c.add_argument("--timezone")
+    c.add_argument("--headed", action="store_true")
     c.add_argument("--ignore-https-errors", action="store_true")
-    c.add_argument("--url", help="open URL after creating")
-    c.add_argument("--tag", action="append", help="key=value tag")
+    c.add_argument("--url")
+    c.add_argument("--tag", action="append")
     c.set_defaults(func=cmd_create)
 
-    # list
-    c = sub.add_parser("list", aliases=["ls"], help="list sessions")
-    c.add_argument("--alive", action="store_true", help="only show running")
+    c = sub.add_parser("list", aliases=["ls"])
+    c.add_argument("--alive", action="store_true")
     c.set_defaults(func=cmd_list)
 
-    # status
-    c = sub.add_parser("status", help="show session details")
+    c = sub.add_parser("status")
     c.add_argument("name")
     c.set_defaults(func=cmd_status)
 
-    # open
-    c = sub.add_parser("open", help="open URL in session")
+    c = sub.add_parser("open")
     c.add_argument("name")
     c.add_argument("url")
     c.set_defaults(func=cmd_open)
 
-    # screenshot
-    c = sub.add_parser("screenshot", aliases=["ss"], help="capture screenshot")
+    c = sub.add_parser("screenshot", aliases=["ss"])
     c.add_argument("name")
     c.add_argument("output", default="screenshot.png", nargs="?")
     c.add_argument("--full-page", action="store_true")
     c.set_defaults(func=cmd_screenshot)
 
-    # auth
-    c = sub.add_parser("auth", help="open headed browser for manual login")
+    c = sub.add_parser("auth")
     c.add_argument("name")
-    c.add_argument("--url", help="navigate to this URL for login")
-    c.add_argument("--proxy", help="proxy URL")
-    c.add_argument("--preset", help="fingerprint preset")
+    c.add_argument("--url")
+    c.add_argument("--proxy")
+    c.add_argument("--preset")
     c.set_defaults(func=cmd_auth)
 
-    # close
-    c = sub.add_parser("close", help="close session browser (keep profile)")
+    c = sub.add_parser("close")
     c.add_argument("name")
     c.set_defaults(func=cmd_close)
 
-    # destroy
-    c = sub.add_parser("destroy", help="close + delete session permanently")
+    c = sub.add_parser("destroy")
     c.add_argument("name")
     c.set_defaults(func=cmd_destroy)
 
-    # presets
-    c = sub.add_parser("presets", help="list fingerprint presets")
+    c = sub.add_parser("presets")
     c.set_defaults(func=cmd_presets)
 
     args = p.parse_args()

@@ -1,19 +1,3 @@
-"""hutch/fingerprint.py — coherent fingerprint profile generation.
-
-Antidetect browsers (GoLogin, Multilogin) generate fingerprint "profiles"
-where every signal is internally consistent: the UA says Windows, the
-platform says Win32, the screen says 1920x1080, the timezone says EST.
-A mismatch (Linux UA + Windows platform) is the #1 detection signal.
-
-This module generates coherent profiles from a small set of presets.
-It's NOT trying to defeat Cloudflare Bot Management — that's a losing
-arms race. It's making sure sessions don't correlate with each other
-and don't scream "I'm a bot" from obvious mismatches.
-
-For hardened WAF bypass, use Camoufox (Firefox engine) instead of
-Chromium — different TLS fingerprint (JA3), different everything.
-"""
-
 import hashlib
 import random
 from typing import Optional
@@ -73,16 +57,6 @@ _PRESETS = [
 
 def generate(*, preset=None, seed=None, locale=None, timezone=None,
              geolocation=None) -> Fingerprint:
-    """Generate a coherent fingerprint profile.
-
-    Args:
-        preset: name of a preset (e.g. "win-desktop-1080p") or None for random
-        seed: deterministic seed — same seed = same fingerprint every time.
-              Useful for giving each program a stable identity.
-        locale: override locale (e.g. "en-IN")
-        timezone: override timezone (e.g. "Asia/Kolkata")
-        geolocation: override geo (e.g. {"latitude": 28.6, "longitude": 77.2})
-    """
     rng = random.Random(seed) if seed else random.Random()
 
     if preset:
@@ -112,18 +86,11 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
 
 
 def generate_for_program(program_name: str, **kwargs) -> Fingerprint:
-    """Generate a deterministic fingerprint from a program name.
-
-    Same program name always gets the same fingerprint — consistent identity
-    across sessions, but different programs get different profiles so they
-    can't be correlated.
-    """
     seed = int(hashlib.sha256(program_name.encode()).hexdigest()[:8], 16)
     return generate(seed=seed, **kwargs)
 
 
 def list_presets():
-    """Return available preset names and their descriptions."""
     return [
         {"name": p["name"], "viewport": f"{p['viewport'][0]}x{p['viewport'][1]}",
          "platform": p.get("platform", "?"), "locale": p.get("locale", "en-US")}
