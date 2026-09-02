@@ -136,10 +136,12 @@ class CaidoClient:
     async def select_project(self, project_id):
         data = await self._gql("""
             mutation($id: ID!) {
-                selectProject(id: $id) { project { id name } }
+                selectProject(id: $id) {
+                    currentProject { project { id name } }
+                }
             }
         """, {"id": project_id})
-        return data["selectProject"]["project"]
+        return data["selectProject"]["currentProject"]["project"]
 
     async def delete_project(self, project_id):
         await self._gql("""

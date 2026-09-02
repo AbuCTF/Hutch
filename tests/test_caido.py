@@ -50,7 +50,7 @@ async def _mock_graphql(request):
 
     if "selectProject" in query:
         return web.json_response({"data": {"selectProject": {
-            "project": {"id": variables["id"], "name": "selected"}}}})
+            "currentProject": {"project": {"id": variables["id"], "name": "selected"}}}}})
 
     if "deleteProject" in query:
         return web.json_response({"data": {"deleteProject": {
