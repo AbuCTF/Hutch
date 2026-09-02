@@ -98,10 +98,17 @@ async def cmd_status(pool, args):
 
 
 async def cmd_open(pool, args):
-    s = await pool.get(args.name, launch=True)
+    s = await pool.get(args.name)
+    if args.headed and s.is_alive and s.headless:
+        await s.close()
+    if args.headed:
+        s.headless = False
+    if not s.is_alive:
+        await s.launch(pool._playwright)
     page = await s.new_page()
     await page.goto(args.url)
-    print(f"opened {args.url} in '{args.name}'")
+    print(f"opened {args.url} in '{args.name}'"
+          f"{' (headed)' if not s.headless else ''}")
 
 
 async def cmd_screenshot(pool, args):
@@ -151,6 +158,53 @@ async def cmd_auth(pool, args):
     await s.save_state()
     await s.close()
     print(f"auth state saved for '{name}'")
+
+
+async def cmd_drive(pool, args):
+    name = args.name
+    _validate_name(name)
+    if name not in pool:
+        fp = None
+        if args.preset:
+            fp = generate(preset=args.preset, locale=args.locale,
+                          timezone=args.timezone)
+        elif args.program:
+            fp = generate_for_program(args.program, locale=args.locale,
+                                      timezone=args.timezone)
+        proxy = ProxyConfig(server=args.proxy) if args.proxy else None
+        s = await pool.create(
+            name, proxy=proxy, fingerprint=fp,
+            headless=False,
+            ignore_https_errors=args.ignore_https_errors,
+        )
+        print(f"created '{name}' (headed)")
+    else:
+        s = await pool.get(name)
+        if s.is_alive and s.headless:
+            await s.close()
+        s.headless = False
+        if not s.is_alive:
+            await s.launch(pool._playwright)
+        print(f"reopened '{name}' (headed)")
+
+    if args.url:
+        page = await s.new_page()
+        await page.goto(args.url)
+        print(f"navigated to {args.url}")
+
+    print(f"\nbrowser is open — interact freely")
+    print(f"press Enter to save state and close, or Ctrl+C to close without saving")
+    try:
+        input()
+        await s.save_state()
+        print(f"state saved for '{name}'")
+    except (EOFError, KeyboardInterrupt):
+        print()
+    if not args.keep:
+        await s.close()
+        print(f"closed '{name}'")
+    else:
+        print(f"keeping '{name}' alive")
 
 
 async def cmd_close(pool, args):
@@ -218,6 +272,7 @@ def main():
             "  list (ls)       list sessions\n"
             "  status          show session details\n"
             "  open            open a URL in a session\n"
+            "  drive           open headed browser for interactive use\n"
             "  screenshot (ss) take a screenshot\n"
             "  auth            open headed browser for manual login\n"
             "  close           close a running session\n"
@@ -270,11 +325,12 @@ def main():
     c = _sub("open")
     c.add_argument("name", help="session name")
     c.add_argument("url", help="URL to navigate to")
+    c.add_argument("--headed", action="store_true", help="relaunch in headed mode")
     c.set_defaults(func=cmd_open)
 
     c = _sub("screenshot", aliases=["ss"])
     c.add_argument("name", help="session name")
-    c.add_argument("-o", "--output", default="screenshot.png", metavar="FILE",
+    c.add_argument("output", nargs="?", default="screenshot.png", metavar="FILE",
                    help="output file path (default: screenshot.png)")
     c.add_argument("--url", metavar="URL", help="navigate to URL before capturing")
     c.add_argument("--full-page", action="store_true", help="capture full scrollable page")
@@ -286,6 +342,19 @@ def main():
     c.add_argument("--proxy", metavar="URL", help="proxy server")
     c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
     c.set_defaults(func=cmd_auth)
+
+    c = _sub("drive")
+    c.add_argument("name", help="session name (creates if new)")
+    c.add_argument("--url", metavar="URL", help="navigate to URL")
+    c.add_argument("--proxy", metavar="URL", help="proxy server")
+    c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
+    c.add_argument("--program", metavar="NAME", help="program name")
+    c.add_argument("--locale", metavar="CODE", help="override locale")
+    c.add_argument("--timezone", metavar="TZ", help="override timezone")
+    c.add_argument("--ignore-https-errors", action="store_true")
+    c.add_argument("--keep", action="store_true",
+                   help="keep session alive after exiting")
+    c.set_defaults(func=cmd_drive)
 
     c = _sub("close")
     c.add_argument("name", help="session name")
