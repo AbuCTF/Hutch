@@ -75,6 +75,7 @@ class Session:
         self._resume_event = asyncio.Event()
         self._resume_event.set()
         self._pause_callbacks = []
+        self._intercept_rules = []
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -280,6 +281,141 @@ class Session:
         self._snapshot_cursor = self.context.cursor
         return d
 
+    async def goto(self, url, *, wait_until="load"):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            page = await self.new_page()
+        self._last_activity = time.time()
+        await page.goto(url, wait_until=wait_until)
+        return await self.page_state()
+
+    async def click(self, selector, *, wait_after="networkidle", timeout=5000):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        await page.click(selector)
+        if wait_after:
+            try:
+                await page.wait_for_load_state(wait_after, timeout=timeout)
+            except Exception:
+                pass
+        return await self.page_state()
+
+    async def fill(self, selector, value, *, press_enter=False):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        await page.fill(selector, value)
+        if press_enter:
+            await page.press(selector, "Enter")
+        return await self.page_state()
+
+    async def type_text(self, selector, text, *, delay=50):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        await page.type(selector, text, delay=delay)
+        return await self.page_state()
+
+    async def press(self, selector, key):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        await page.press(selector, key)
+        return await self.page_state()
+
+    async def select_option(self, selector, value):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        await page.select_option(selector, value)
+        return await self.page_state()
+
+    async def evaluate(self, expression):
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        return await page.evaluate(expression)
+
+    async def wait_for(self, selector=None, *, state="visible",
+                       url=None, timeout=30000):
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        if url:
+            await page.wait_for_url(url, timeout=timeout)
+        elif selector:
+            await page.wait_for_selector(selector, state=state, timeout=timeout)
+        return await self.page_state()
+
+    async def cookies(self, urls=None):
+        if not self._context:
+            return []
+        if urls:
+            return await self._context.cookies(urls)
+        return await self._context.cookies()
+
+    async def set_cookie(self, **cookie):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.add_cookies([cookie])
+
+    async def set_cookies(self, cookies):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.add_cookies(cookies)
+
+    async def delete_cookies(self):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.clear_cookies()
+
+    async def storage(self):
+        page = self._active_page()
+        if not page:
+            return {"localStorage": {}, "sessionStorage": {}}
+        return await page.evaluate("""() => {
+            const ls = {}; const ss = {};
+            try { for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i); ls[k] = localStorage.getItem(k);
+            }} catch(e) {}
+            try { for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i); ss[k] = sessionStorage.getItem(k);
+            }} catch(e) {}
+            return {localStorage: ls, sessionStorage: ss};
+        }""")
+
+    async def set_storage(self, key, value, *, session_storage=False):
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        store = "sessionStorage" if session_storage else "localStorage"
+        await page.evaluate(
+            f"{store}.setItem({json.dumps(key)}, {json.dumps(value)})")
+
+    async def screenshot(self, *, full_page=False, path=None):
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        kwargs = {"full_page": full_page}
+        if path:
+            kwargs["path"] = path
+        return await page.screenshot(**kwargs)
+
     async def page_state(self):
         page = self._active_page()
         if not page:
@@ -391,6 +527,31 @@ class Session:
                 "— resolve the challenge and call resume()")
         if self.state == SessionState.HIBERNATED:
             raise RuntimeError(f"session '{self.name}' is hibernated — relaunch first")
+
+    async def intercept(self, pattern, handler):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        for page in self._pages:
+            if not page.is_closed():
+                await page.route(pattern, handler)
+        self._intercept_rules.append((pattern, handler))
+
+    async def set_extra_headers(self, headers):
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        await self._context.set_extra_http_headers(headers)
+
+    async def clear_intercepts(self):
+        if not self._context:
+            return
+        for pattern, handler in self._intercept_rules:
+            for page in self._pages:
+                if not page.is_closed():
+                    try:
+                        await page.unroute(pattern, handler)
+                    except Exception:
+                        pass
+        self._intercept_rules.clear()
 
     async def save_state(self):
         if not self._context:

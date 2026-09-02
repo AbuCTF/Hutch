@@ -1,4 +1,4 @@
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 from .artifacts import ArtifactStore  # noqa: F401
 from .client import HutchClient, HutchError, SessionHandle, connect  # noqa: F401

@@ -156,7 +156,20 @@ class HutchDaemon:
             "goto": self._rpc_goto,
             "click": self._rpc_click,
             "fill": self._rpc_fill,
+            "type": self._rpc_type,
+            "press": self._rpc_press,
+            "select_option": self._rpc_select_option,
+            "wait_for": self._rpc_wait_for,
             "evaluate": self._rpc_evaluate,
+            "cookies": self._rpc_cookies,
+            "set_cookie": self._rpc_set_cookie,
+            "delete_cookies": self._rpc_delete_cookies,
+            "storage": self._rpc_storage,
+            "set_storage": self._rpc_set_storage,
+            "set_headers": self._rpc_set_headers,
+            "block_urls": self._rpc_block_urls,
+            "modify_headers": self._rpc_modify_headers,
+            "clear_intercepts": self._rpc_clear_intercepts,
             "observe": self._rpc_observe,
             "snapshot": self._rpc_snapshot,
             "diff": self._rpc_diff,
@@ -237,19 +250,99 @@ class HutchDaemon:
         return s, pages[-1]
 
     async def _rpc_goto(self, params):
-        s, page = await self._get_page(params["name"])
-        await page.goto(params["url"], wait_until=params.get("wait_until", "load"))
-        return await s.page_state()
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.goto(params["url"],
+                            wait_until=params.get("wait_until", "load"))
 
     async def _rpc_click(self, params):
-        s, page = await self._get_page(params["name"])
-        await page.click(params["selector"])
-        return await s.page_state()
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.click(params["selector"],
+                             wait_after=params.get("wait_after", "networkidle"),
+                             timeout=params.get("timeout", 5000))
 
     async def _rpc_fill(self, params):
-        s, page = await self._get_page(params["name"])
-        await page.fill(params["selector"], params["value"])
-        return await s.page_state()
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.fill(params["selector"], params["value"],
+                            press_enter=params.get("press_enter", False))
+
+    async def _rpc_type(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.type_text(params["selector"], params["text"],
+                                 delay=params.get("delay", 50))
+
+    async def _rpc_press(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.press(params["selector"], params["key"])
+
+    async def _rpc_select_option(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.select_option(params["selector"], params["value"])
+
+    async def _rpc_wait_for(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.wait_for(
+            params.get("selector"),
+            state=params.get("state", "visible"),
+            url=params.get("url"),
+            timeout=params.get("timeout", 30000))
+
+    async def _rpc_cookies(self, params):
+        s = await self.pool.get(params["name"])
+        return await s.cookies(urls=params.get("urls"))
+
+    async def _rpc_set_cookie(self, params):
+        s = await self.pool.get(params["name"])
+        cookie = {k: v for k, v in params.items() if k != "name"}
+        cookie_name = cookie.pop("cookie_name", None)
+        if cookie_name:
+            cookie["name"] = cookie_name
+        await s.set_cookie(**cookie)
+        return {"set": True}
+
+    async def _rpc_delete_cookies(self, params):
+        s = await self.pool.get(params["name"])
+        await s.delete_cookies()
+        return {"cleared": True}
+
+    async def _rpc_storage(self, params):
+        s = await self.pool.get(params["name"])
+        return await s.storage()
+
+    async def _rpc_set_storage(self, params):
+        s = await self.pool.get(params["name"])
+        await s.set_storage(params["key"], params["value"],
+                            session_storage=params.get("session_storage", False))
+        return {"set": True}
+
+    async def _rpc_set_headers(self, params):
+        s = await self.pool.get(params["name"])
+        headers = {k: v for k, v in params.items() if k != "name"}
+        await s.set_extra_headers(headers)
+        return {"set": True}
+
+    async def _rpc_block_urls(self, params):
+        s = await self.pool.get(params["name"])
+        patterns = params["patterns"]
+        for pat in patterns:
+            async def block(route, _pat=pat):
+                await route.abort()
+            await s.intercept(pat, block)
+        return {"blocked": len(patterns)}
+
+    async def _rpc_modify_headers(self, params):
+        s = await self.pool.get(params["name"])
+        pattern = params.get("pattern", "**/*")
+        headers = params["headers"]
+        async def modifier(route, _headers=headers):
+            req_headers = {**route.request.headers, **_headers}
+            await route.continue_(headers=req_headers)
+        await s.intercept(pattern, modifier)
+        return {"intercepted": pattern}
+
+    async def _rpc_clear_intercepts(self, params):
+        s = await self.pool.get(params["name"])
+        await s.clear_intercepts()
+        return {"cleared": True}
 
     async def _rpc_observe(self, params):
         s = await self.pool.get(params["name"], launch=True)
