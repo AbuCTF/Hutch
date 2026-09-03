@@ -8,49 +8,54 @@ from .session import Fingerprint
 _PRESETS = [
     {
         "name": "win-desktop-1080p",
-        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "platform": "Win32",
         "viewport": (1920, 1080),
         "screen": (1920, 1080),
         "locale": "en-US",
         "timezone": "America/New_York",
+        "sec_ch_ua": '"Chromium";v="137", "Google Chrome";v="137", "Not=A?Brand";v="24"',
     },
     {
         "name": "win-desktop-1440p",
-        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "platform": "Win32",
         "viewport": (2560, 1440),
         "screen": (2560, 1440),
         "locale": "en-US",
         "timezone": "America/Chicago",
+        "sec_ch_ua": '"Chromium";v="137", "Google Chrome";v="137", "Not=A?Brand";v="24"',
     },
     {
         "name": "mac-desktop-retina",
-        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "platform": "MacIntel",
         "viewport": (1440, 900),
         "screen": (2880, 1800),
         "locale": "en-US",
         "timezone": "America/Los_Angeles",
         "device_scale_factor": 2.0,
+        "sec_ch_ua": '"Chromium";v="137", "Google Chrome";v="137", "Not=A?Brand";v="24"',
     },
     {
         "name": "linux-desktop",
-        "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "platform": "Linux x86_64",
         "viewport": (1920, 1080),
         "screen": (1920, 1080),
         "locale": "en-US",
         "timezone": "America/New_York",
+        "sec_ch_ua": '"Chromium";v="137", "Google Chrome";v="137", "Not=A?Brand";v="24"',
     },
     {
         "name": "win-laptop-768p",
-        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
         "platform": "Win32",
         "viewport": (1366, 768),
         "screen": (1366, 768),
         "locale": "en-US",
         "timezone": "America/Denver",
+        "sec_ch_ua": '"Chromium";v="137", "Google Chrome";v="137", "Not=A?Brand";v="24"',
     },
 ]
 
@@ -71,7 +76,7 @@ _LOCALES = [
 
 def generate(*, preset=None, seed=None, locale=None, timezone=None,
              geolocation=None) -> Fingerprint:
-    rng = random.Random(seed) if seed else random.Random()
+    rng = random.Random(seed) if seed is not None else random.Random()
 
     if preset:
         p = next((x for x in _PRESETS if x["name"] == preset), None)

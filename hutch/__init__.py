@@ -1,4 +1,4 @@
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .artifacts import ArtifactStore  # noqa: F401
 from .caido import CaidoClient, CaidoConfig, CaidoError  # noqa: F401

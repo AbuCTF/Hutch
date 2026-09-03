@@ -148,7 +148,7 @@ async def cmd_auth(pool, args):
         if s.is_alive:
             await s.close()
         s.headless = False
-        await s.launch(pool._playwright)
+        await pool.get(name, launch=True)
 
     if args.url:
         page = await s.new_page()
@@ -189,7 +189,7 @@ async def cmd_drive(pool, args):
             await s.close()
         s.headless = False
         if not s.is_alive:
-            await s.launch(pool._playwright)
+            await pool.get(name, launch=True)
         print(f"reopened '{name}' (headed)")
 
     if args.url:
@@ -240,11 +240,15 @@ async def cmd_presets(_pool, _args):
 
 async def cmd_caido(_pool, args):
     from .caido import CaidoClient, CaidoConfig, CaidoError
+    sub = args.caido_sub
+    if not sub:
+        print("usage: hutch caido <subcommand>")
+        print("subcommands: status, projects, scopes, history, findings, scope-check")
+        return
     port = getattr(args, "port", _CAIDO_DEFAULT_PORT) or _CAIDO_DEFAULT_PORT
     config = CaidoConfig(url=f"http://127.0.0.1:{port}")
     try:
         async with CaidoClient(config) as caido:
-            sub = args.caido_sub
 
             if sub == "status":
                 info = await caido.instance_info()
@@ -329,6 +333,11 @@ async def cmd_caido(_pool, args):
         raise
 
 
+async def cmd_mcp(_pool, _args):
+    from .mcp import main as mcp_main
+    mcp_main()
+
+
 async def cmd_serve(_pool, args):
     from .server import HutchDaemon
     daemon = HutchDaemon(
@@ -348,8 +357,14 @@ async def _run(args):
     if args.command == "serve":
         await cmd_serve(None, args)
         return
+    if args.command == "mcp":
+        await cmd_mcp(None, args)
+        return
     if args.command == "caido":
         await cmd_caido(None, args)
+        return
+    if args.command == "presets":
+        await cmd_presets(None, args)
         return
     try:
         async with Pool(base_dir=args.base_dir, max_sessions=args.max_sessions) as pool:
@@ -393,6 +408,7 @@ def main():
             "\n"
             "daemon:\n"
             "  serve           start persistent daemon\n"
+            "  mcp             start MCP server over stdio\n"
             "\n"
             "caido:\n"
             "  caido status    show caido connection info\n"
@@ -493,6 +509,9 @@ def main():
     c.add_argument("--idle-timeout", type=int, default=900, metavar="SEC",
                    help="hibernate sessions after N seconds idle (default: 900, 0=disable)")
     c.set_defaults(func=cmd_serve)
+
+    c = _sub("mcp", help="start MCP server over stdio")
+    c.set_defaults(func=cmd_mcp)
 
     c = _sub("presets")
     c.set_defaults(func=cmd_presets)

@@ -1,12 +1,20 @@
 import asyncio
+import functools
 import json
+import logging
 import os
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from playwright._impl._errors import Error as PlaywrightError
+from playwright._impl._errors import TargetClosedError
+
 from .context import Context, Snapshot
+
+_log = logging.getLogger(__name__)
 
 
 class SessionState(Enum):
@@ -43,6 +51,68 @@ class ProxyConfig:
 
 
 _META_FILE = "hutch_meta.json"
+
+_DISCONNECT_PATTERNS = (
+    "browser has been closed",
+    "browser closed",
+    "connection closed",
+    "target closed",
+    "page crashed",
+    "execution context was destroyed",
+    "frame was detached",
+    "navigation failed because page crashed",
+)
+
+_SENTINEL = object()
+
+_WS_FRAME_CAP = 200    # max frames stored per WebSocket connection
+_WS_PAYLOAD_MAX = 4096  # truncation limit for individual frame payloads
+
+
+def _is_disconnect(exc):
+    """Return True if exc signals a dead page/context/browser."""
+    if isinstance(exc, TargetClosedError):
+        return True
+    if isinstance(exc, PlaywrightError):
+        msg = str(exc).lower()
+        return any(p in msg for p in _DISCONNECT_PATTERNS)
+    return False
+
+
+def _retry_on_disconnect(method=None, *, fallback=_SENTINEL):
+    """Decorator: catch disconnect errors, recover page, retry once.
+
+    If *fallback* is given and recovery + retry still fails, return
+    *fallback* (called if callable) instead of raising.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(self, *args, **kwargs):
+            try:
+                return await fn(self, *args, **kwargs)
+            except Exception as exc:
+                if not _is_disconnect(exc):
+                    raise
+                _log.warning(
+                    "session '%s': %s in %s, attempting recovery",
+                    self.name, type(exc).__name__, fn.__name__,
+                )
+                if await self._recover_page():
+                    try:
+                        return await fn(self, *args, **kwargs)
+                    except Exception:
+                        if fallback is not _SENTINEL:
+                            return fallback() if callable(fallback) else fallback
+                        raise
+                if fallback is not _SENTINEL:
+                    return fallback() if callable(fallback) else fallback
+                raise
+        return wrapper
+
+    if method is not None:
+        # bare @_retry_on_disconnect without parens
+        return decorator(method)
+    return decorator
 
 
 class Session:
@@ -82,6 +152,9 @@ class Session:
         self._popup_pages = []
         self._downloads = []
         self._cdp_session = None
+        self._watchdog_task = None
+        self._last_url = None
+        self._websockets = []
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -97,6 +170,16 @@ class Session:
                 "user_agent": self.fingerprint.user_agent,
                 "locale": self.fingerprint.locale,
                 "timezone": self.fingerprint.timezone,
+                "screen_width": self.fingerprint.screen_width,
+                "screen_height": self.fingerprint.screen_height,
+                "platform": self.fingerprint.platform,
+                "color_scheme": self.fingerprint.color_scheme,
+                "device_scale_factor": self.fingerprint.device_scale_factor,
+                "has_touch": self.fingerprint.has_touch,
+                "is_mobile": self.fingerprint.is_mobile,
+                "geolocation": self.fingerprint.geolocation,
+                "disable_webrtc": self.fingerprint.disable_webrtc,
+                "extra_headers": self.fingerprint.extra_headers,
             },
             "headless": self.headless,
             "ignore_https_errors": self.ignore_https_errors,
@@ -118,13 +201,24 @@ class Session:
                 server=meta["proxy"]["server"],
                 bypass=meta["proxy"].get("bypass"),
             )
-        vp = meta.get("fingerprint", {}).get("viewport", "1920x1080").split("x")
+        fp_meta = meta.get("fingerprint", {})
+        vp = fp_meta.get("viewport", "1920x1080").split("x")
         fp = Fingerprint(
             viewport_width=int(vp[0]),
             viewport_height=int(vp[1]),
-            user_agent=meta.get("fingerprint", {}).get("user_agent"),
-            locale=meta.get("fingerprint", {}).get("locale", "en-US"),
-            timezone=meta.get("fingerprint", {}).get("timezone", "America/New_York"),
+            user_agent=fp_meta.get("user_agent"),
+            locale=fp_meta.get("locale", "en-US"),
+            timezone=fp_meta.get("timezone", "America/New_York"),
+            screen_width=fp_meta.get("screen_width", 1920),
+            screen_height=fp_meta.get("screen_height", 1080),
+            platform=fp_meta.get("platform"),
+            color_scheme=fp_meta.get("color_scheme", "light"),
+            device_scale_factor=fp_meta.get("device_scale_factor", 1.0),
+            has_touch=fp_meta.get("has_touch", False),
+            is_mobile=fp_meta.get("is_mobile", False),
+            geolocation=fp_meta.get("geolocation"),
+            disable_webrtc=fp_meta.get("disable_webrtc", True),
+            extra_headers=fp_meta.get("extra_headers", {}),
         )
         s = cls(
             name=meta["name"],
@@ -203,11 +297,15 @@ class Session:
             )
         if self.stealth:
             from .stealth import apply_stealth
-            await apply_stealth(self._context)
+            await apply_stealth(self._context, fingerprint=self._fingerprint)
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
-        self._context.on("page", lambda page: self._setup_page(page))
+        def _on_new_page(page):
+            self._pages.append(page)
+            self._setup_page(page)
+        self._context.on("page", _on_new_page)
+        self._start_watchdog()
         return self._context
 
     def _setup_page(self, page):
@@ -216,13 +314,214 @@ class Session:
         if self._dialog_handler:
             page.on("dialog", self._dialog_handler)
         page.on("download", lambda dl: self._downloads.append(dl))
+        # propagate intercept rules to new pages (popups, target=_blank, etc.)
+        # page.route() is async; batch into one coroutine with error handling
+        if self._intercept_rules:
+            asyncio.ensure_future(self._apply_intercept_rules(page))
+        self._track_websockets(page)
+
+    async def _apply_intercept_rules(self, page):
+        """Apply all stored intercept rules to a page.
+
+        Called via ensure_future from the sync _setup_page callback.
+        Playwright page.route() survives navigations within the same page,
+        so rules set here persist across in-page navigations automatically.
+        """
+        for pattern, handler in self._intercept_rules:
+            try:
+                await page.route(pattern, handler)
+            except Exception as exc:
+                if _is_disconnect(exc):
+                    return  # page gone, stop applying
+                _log.warning(
+                    "session '%s': failed to apply intercept %s: %s",
+                    self.name, pattern, exc,
+                )
+
+    def _track_websockets(self, page):
+        """Hook WebSocket events on a page for protocol analysis.
+
+        Captures connection URLs and frame messages -- critical for mobile
+        apps and SPAs that communicate via WebSocket APIs. Each connection
+        stores up to _WS_FRAME_CAP frames with payloads truncated at
+        _WS_PAYLOAD_MAX bytes.
+        """
+        def _on_ws_created(ws):
+            frames = deque(maxlen=_WS_FRAME_CAP)
+            entry = {
+                "url": ws.url,
+                "page_url": page.url,
+                "opened_at": time.time(),
+                "closed_at": None,
+                "frames": frames,
+            }
+            self._websockets.append(entry)
+            _log.debug("session '%s': ws opened %s", self.name, ws.url)
+
+            def _on_sent(data):
+                payload = data.get("payload", "") if isinstance(data, dict) else str(data)
+                if isinstance(payload, bytes):
+                    payload = payload.hex()
+                if len(payload) > _WS_PAYLOAD_MAX:
+                    payload = payload[:_WS_PAYLOAD_MAX]
+                frames.append({"dir": "out", "data": payload, "ts": time.time()})
+                if self.context:
+                    self.context._emit("websocket_frame", {
+                        "url": ws.url, "dir": "out", "data": payload,
+                    })
+
+            def _on_received(data):
+                payload = data.get("payload", "") if isinstance(data, dict) else str(data)
+                if isinstance(payload, bytes):
+                    payload = payload.hex()
+                if len(payload) > _WS_PAYLOAD_MAX:
+                    payload = payload[:_WS_PAYLOAD_MAX]
+                frames.append({"dir": "in", "data": payload, "ts": time.time()})
+                if self.context:
+                    self.context._emit("websocket_frame", {
+                        "url": ws.url, "dir": "in", "data": payload,
+                    })
+
+            def _on_ws_close(_):
+                entry["closed_at"] = time.time()
+                _log.debug("session '%s': ws closed %s", self.name, ws.url)
+
+            ws.on("framesent", _on_sent)
+            ws.on("framereceived", _on_received)
+            ws.on("close", _on_ws_close)
+
+        page.on("websocket", _on_ws_created)
+
+    def websocket_log(self):
+        """Return collected WebSocket connection data.
+
+        Each entry: url, page_url, opened_at, closed_at,
+        frame_count, and frames (list of {dir, data, ts}).
+        """
+        result = []
+        for entry in self._websockets:
+            result.append({
+                "url": entry["url"],
+                "page_url": entry["page_url"],
+                "opened_at": entry["opened_at"],
+                "closed_at": entry["closed_at"],
+                "frame_count": len(entry["frames"]),
+                "frames": list(entry["frames"]),
+            })
+        return result
+
+    # --- crash recovery ---
+
+    async def _recover_page(self):
+        """Try to restore a live page after crash or disconnect.
+
+        Checks context, then browser.  Returns True on success.
+        """
+        # Determine last known URL
+        last_url = self._last_url
+        if not last_url and self.context:
+            try:
+                entries = self.context.navigations.all()
+                if entries:
+                    last_url = entries[-1].url
+            except Exception:
+                pass
+
+        # If context ref is gone, nothing to recover into
+        if not self._context:
+            _log.error("session '%s': no context, cannot recover", self.name)
+            self.state = SessionState.HIBERNATED
+            return False
+
+        # Probe whether the context is still alive
+        try:
+            await self._context.cookies()
+        except Exception as exc:
+            if _is_disconnect(exc):
+                _log.error(
+                    "session '%s': context dead, marking hibernated", self.name,
+                )
+                self._context = None
+                self._pages = []
+                if self._cdp_session:
+                    self._cdp_session = None
+                self.state = SessionState.HIBERNATED
+                self._stop_watchdog()
+                return False
+            raise
+
+        # Context alive -- open a fresh page
+        try:
+            page = await self._context.new_page()
+        except Exception:
+            _log.error("session '%s': cannot open page, context broken", self.name)
+            self._context = None
+            self._pages = []
+            self.state = SessionState.HIBERNATED
+            self._stop_watchdog()
+            return False
+
+        # _on_new_page handler already appended page and called _setup_page
+
+        # Navigate back to the last URL if we have one
+        if last_url and last_url not in ("", "about:blank"):
+            try:
+                await page.goto(last_url, wait_until="load", timeout=15000)
+            except Exception:
+                _log.debug(
+                    "session '%s': recovered page but navigation to %s failed",
+                    self.name, last_url,
+                )
+
+        # Invalidate stale CDP session
+        if self._cdp_session:
+            self._cdp_session = None
+
+        _log.info("session '%s': page recovered (url=%s)", self.name, last_url or "blank")
+        return True
+
+    # --- connection watchdog ---
+
+    def _start_watchdog(self):
+        """Launch background browser-connectivity check (every 30s)."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            return
+        self._watchdog_task = asyncio.ensure_future(self._watchdog_loop())
+
+    def _stop_watchdog(self):
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+
+    async def _watchdog_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(30)
+                if self.state != SessionState.ACTIVE or not self._context:
+                    break
+                try:
+                    await self._context.cookies()
+                except Exception as exc:
+                    if _is_disconnect(exc):
+                        _log.warning(
+                            "session '%s': watchdog detected disconnect",
+                            self.name,
+                        )
+                        recovered = await self._recover_page()
+                        if not recovered:
+                            break
+                    else:
+                        break
+        except asyncio.CancelledError:
+            pass
 
     async def new_page(self):
         self._require_active()
         if not self._context:
             raise RuntimeError(f"session '{self.name}' not launched")
+        # _on_new_page handler (registered in launch()) appends the page
+        # to self._pages and calls _setup_page -- no explicit append here
         page = await self._context.new_page()
-        self._pages.append(page)
         self._last_activity = time.time()
         return page
 
@@ -240,6 +539,7 @@ class Session:
         self._last_activity = time.time()
         return page
 
+    @_retry_on_disconnect
     async def snapshot(self, *, screenshot=False, storage=False, full=False):
         if not self.context:
             raise RuntimeError("context capture not enabled")
@@ -307,15 +607,18 @@ class Session:
         self._snapshot_cursor = self.context.cursor
         return d
 
+    @_retry_on_disconnect
     async def goto(self, url, *, wait_until="load"):
         self._require_active()
         page = self._active_page()
         if not page:
             page = await self.new_page()
         self._last_activity = time.time()
+        self._last_url = url
         await page.goto(url, wait_until=wait_until)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def click(self, selector, *, wait_after="networkidle", timeout=5000):
         self._require_active()
         page = self._active_page()
@@ -330,6 +633,7 @@ class Session:
                 pass
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def fill(self, selector, value, *, press_enter=False):
         self._require_active()
         page = self._active_page()
@@ -341,6 +645,7 @@ class Session:
             await page.press(selector, "Enter")
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def type_text(self, selector, text, *, delay=50):
         self._require_active()
         page = self._active_page()
@@ -350,6 +655,7 @@ class Session:
         await page.type(selector, text, delay=delay)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def press(self, selector, key):
         self._require_active()
         page = self._active_page()
@@ -359,6 +665,7 @@ class Session:
         await page.press(selector, key)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def select_option(self, selector, value):
         self._require_active()
         page = self._active_page()
@@ -368,6 +675,7 @@ class Session:
         await page.select_option(selector, value)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def evaluate(self, expression):
         page = self._active_page()
         if not page:
@@ -375,6 +683,7 @@ class Session:
         self._last_activity = time.time()
         return await page.evaluate(expression)
 
+    @_retry_on_disconnect
     async def wait_for(self, selector=None, *, state="visible",
                        url=None, timeout=30000):
         self._require_active()
@@ -434,14 +743,38 @@ class Session:
             f"{store}.setItem({json.dumps(key)}, {json.dumps(value)})")
 
     async def screenshot(self, *, full_page=False, path=None):
-        page = self._active_page()
-        if not page:
-            raise RuntimeError(f"session '{self.name}' has no open page")
         kwargs = {"full_page": full_page}
         if path:
             kwargs["path"] = path
-        return await page.screenshot(**kwargs)
 
+        page = self._active_page()
+        if page:
+            try:
+                return await page.screenshot(**kwargs)
+            except Exception as exc:
+                if not _is_disconnect(exc):
+                    raise
+                _log.warning(
+                    "session '%s': disconnect in screenshot, recovering",
+                    self.name,
+                )
+                if await self._recover_page():
+                    page = self._active_page()
+                    if page:
+                        return await page.screenshot(**kwargs)
+
+        # Fallback: try any remaining live page
+        if self._context:
+            for p in reversed(self._pages):
+                if not p.is_closed():
+                    try:
+                        return await p.screenshot(**kwargs)
+                    except Exception:
+                        continue
+
+        raise RuntimeError(f"session '{self.name}' has no open page")
+
+    @_retry_on_disconnect(fallback=lambda: {"url": "", "title": "", "dom": None})
     async def page_state(self):
         page = self._active_page()
         if not page:
@@ -452,12 +785,15 @@ class Session:
             dom = await page.accessibility.snapshot()
         except Exception:
             pass
+        url = page.url
+        self._last_url = url
         return {
-            "url": page.url,
+            "url": url,
             "title": await page.title(),
             "dom": dom,
         }
 
+    @_retry_on_disconnect(fallback=[])
     async def observe(self):
         self._require_active()
         page = self._active_page()
@@ -524,16 +860,19 @@ class Session:
 
     # --- navigation ---
 
+    @_retry_on_disconnect
     async def go_back(self, *, wait_until="load"):
         page = self._require_page()
         resp = await page.go_back(wait_until=wait_until)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def go_forward(self, *, wait_until="load"):
         page = self._require_page()
         resp = await page.go_forward(wait_until=wait_until)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def reload(self, *, wait_until="load"):
         page = self._require_page()
         await page.reload(wait_until=wait_until)
@@ -541,11 +880,13 @@ class Session:
 
     # --- interaction ---
 
+    @_retry_on_disconnect
     async def hover(self, selector):
         page = self._require_page()
         await page.hover(selector)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def dblclick(self, selector, *, wait_after="networkidle", timeout=5000):
         page = self._require_page()
         await page.dblclick(selector)
@@ -556,11 +897,13 @@ class Session:
                 pass
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def right_click(self, selector):
         page = self._require_page()
         await page.click(selector, button="right")
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def scroll(self, *, direction="down", amount=500, selector=None):
         page = self._require_page()
         if selector:
@@ -579,88 +922,107 @@ class Session:
             await page.mouse.wheel(delta_x, delta_y)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def focus(self, selector):
         page = self._require_page()
         await page.focus(selector)
 
+    @_retry_on_disconnect
     async def check(self, selector):
         page = self._require_page()
         await page.check(selector)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def uncheck(self, selector):
         page = self._require_page()
         await page.uncheck(selector)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def set_checked(self, selector, checked):
         page = self._require_page()
         await page.set_checked(selector, checked)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def set_input_files(self, selector, files):
         page = self._require_page()
         await page.set_input_files(selector, files)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def drag_and_drop(self, source, target):
         page = self._require_page()
         await page.drag_and_drop(source, target)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def tap(self, selector):
         page = self._require_page()
         await page.tap(selector)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def dispatch_event(self, selector, event_type, event_init=None):
         page = self._require_page()
         await page.dispatch_event(selector, event_type, event_init)
 
     # --- content extraction ---
 
+    @_retry_on_disconnect
     async def content(self):
         page = self._require_page()
         return await page.content()
 
+    @_retry_on_disconnect
     async def inner_text(self, selector):
         page = self._require_page()
         return await page.inner_text(selector)
 
+    @_retry_on_disconnect
     async def inner_html(self, selector):
         page = self._require_page()
         return await page.inner_html(selector)
 
+    @_retry_on_disconnect
     async def text_content(self, selector):
         page = self._require_page()
         return await page.text_content(selector)
 
+    @_retry_on_disconnect
     async def get_attribute(self, selector, name):
         page = self._require_page()
         return await page.get_attribute(selector, name)
 
+    @_retry_on_disconnect
     async def input_value(self, selector):
         page = self._require_page()
         return await page.input_value(selector)
 
     # --- element state ---
 
+    @_retry_on_disconnect
     async def is_visible(self, selector):
         page = self._require_page()
         return await page.is_visible(selector)
 
+    @_retry_on_disconnect
     async def is_checked(self, selector):
         page = self._require_page()
         return await page.is_checked(selector)
 
+    @_retry_on_disconnect
     async def is_enabled(self, selector):
         page = self._require_page()
         return await page.is_enabled(selector)
 
+    @_retry_on_disconnect
     async def is_hidden(self, selector):
         page = self._require_page()
         return await page.is_hidden(selector)
 
+    @_retry_on_disconnect
     async def is_editable(self, selector):
         page = self._require_page()
         return await page.is_editable(selector)
@@ -678,6 +1040,7 @@ class Session:
             })
         return result
 
+    @_retry_on_disconnect
     async def frame_evaluate(self, expression, *, name=None, url=None):
         page = self._require_page()
         frame = None
@@ -689,6 +1052,7 @@ class Session:
             raise RuntimeError("frame not found")
         return await frame.evaluate(expression)
 
+    @_retry_on_disconnect
     async def frame_click(self, selector, *, name=None, url=None):
         page = self._require_page()
         if name:
@@ -702,6 +1066,7 @@ class Session:
         await frame.click(selector)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def frame_fill(self, selector, value, *, name=None, url=None):
         page = self._require_page()
         if name:
@@ -715,6 +1080,7 @@ class Session:
         await frame.fill(selector, value)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def frame_content(self, *, name=None, url=None):
         page = self._require_page()
         if name:
@@ -729,6 +1095,7 @@ class Session:
 
     # --- locator helpers ---
 
+    @_retry_on_disconnect
     async def query(self, selector, *, text=None, role=None, label=None,
                     placeholder=None, alt_text=None, title=None, test_id=None):
         page = self._require_page()
@@ -762,6 +1129,7 @@ class Session:
             })
         return results
 
+    @_retry_on_disconnect
     async def locator_click(self, *, text=None, role=None, name=None,
                             label=None, nth=0):
         page = self._require_page()
@@ -776,6 +1144,7 @@ class Session:
         await loc.nth(nth).click()
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def locator_fill(self, value, *, label=None, placeholder=None,
                            role=None, name=None, nth=0):
         page = self._require_page()
@@ -792,16 +1161,19 @@ class Session:
 
     # --- advanced waits ---
 
+    @_retry_on_disconnect
     async def wait_for_function(self, expression, *, timeout=30000):
         page = self._require_page()
         await page.wait_for_function(expression, timeout=timeout)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def wait_for_load_state(self, state="load", *, timeout=30000):
         page = self._require_page()
         await page.wait_for_load_state(state, timeout=timeout)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def wait_for_response(self, url_glob, *, timeout=30000):
         page = self._require_page()
         resp = await page.wait_for_response(url_glob, timeout=timeout)
@@ -811,6 +1183,7 @@ class Session:
             "headers": dict(resp.headers),
         }
 
+    @_retry_on_disconnect
     async def wait_for_request(self, url_glob, *, timeout=30000):
         page = self._require_page()
         req = await page.wait_for_request(url_glob, timeout=timeout)
@@ -829,14 +1202,14 @@ class Session:
             if click_action:
                 await page.click(action_selector)
         popup = popup_info.value
-        self._pages.append(popup)
+        # _on_new_page handler already appended popup to self._pages
+        # and called _setup_page (which hooks context + intercepts + ws)
         self._popup_pages.append(popup)
-        if self.context:
-            self.context.hook_page(popup)
+        pages = [p for p in self._pages if not p.is_closed()]
         return {
             "url": popup.url,
             "title": await popup.title(),
-            "page_index": len(self._pages) - 1,
+            "page_index": len(pages) - 1,
         }
 
     async def switch_page(self, index):
@@ -855,14 +1228,16 @@ class Session:
         if not self._context:
             return []
         result = []
-        for i, p in enumerate(self._pages):
+        filtered_idx = 0
+        for p in self._pages:
             if p.is_closed():
                 continue
             result.append({
-                "index": i,
+                "index": filtered_idx,
                 "url": p.url,
                 "title": await p.title(),
             })
+            filtered_idx += 1
         return result
 
     async def close_page(self, index=None):
@@ -877,6 +1252,10 @@ class Session:
             raise RuntimeError(f"page index {index} out of range")
         target = pages[index]
         await target.close()
+        try:
+            self._pages.remove(target)
+        except ValueError:
+            pass
         return await self.page_state()
 
     # --- download handling ---
@@ -1082,51 +1461,62 @@ class Session:
 
     # --- mouse / keyboard ---
 
+    @_retry_on_disconnect
     async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
         page = self._require_page()
         await page.mouse.click(x, y, button=button, click_count=click_count,
                                delay=delay)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def mouse_dblclick(self, x, y, *, button="left", delay=0):
         page = self._require_page()
         await page.mouse.dblclick(x, y, button=button, delay=delay)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def mouse_move(self, x, y, *, steps=1):
         page = self._require_page()
         await page.mouse.move(x, y, steps=steps)
 
+    @_retry_on_disconnect
     async def mouse_down(self, *, button="left"):
         page = self._require_page()
         await page.mouse.down(button=button)
 
+    @_retry_on_disconnect
     async def mouse_up(self, *, button="left"):
         page = self._require_page()
         await page.mouse.up(button=button)
 
+    @_retry_on_disconnect
     async def mouse_wheel(self, delta_x, delta_y):
         page = self._require_page()
         await page.mouse.wheel(delta_x, delta_y)
 
+    @_retry_on_disconnect
     async def keyboard_press(self, key):
         page = self._require_page()
         await page.keyboard.press(key)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def keyboard_type(self, text, *, delay=0):
         page = self._require_page()
         await page.keyboard.type(text, delay=delay)
         return await self.page_state()
 
+    @_retry_on_disconnect
     async def keyboard_down(self, key):
         page = self._require_page()
         await page.keyboard.down(key)
 
+    @_retry_on_disconnect
     async def keyboard_up(self, key):
         page = self._require_page()
         await page.keyboard.up(key)
 
+    @_retry_on_disconnect
     async def keyboard_insert_text(self, text):
         page = self._require_page()
         await page.keyboard.insert_text(text)
@@ -1208,6 +1598,7 @@ class Session:
         await self._context.storage_state(path=path)
 
     async def close(self):
+        self._stop_watchdog()
         if self._cdp_session:
             try:
                 await self._cdp_session.detach()
@@ -1223,9 +1614,12 @@ class Session:
             self._pages = []
             self._popup_pages = []
             self._downloads = []
+            self._websockets = []
             self._dialog_handler = None
             self._pending_dialog = None
             self._launched_at = None
+            if self.context:
+                self.context.clear()
             if self.state != SessionState.PAUSED:
                 self.state = SessionState.HIBERNATED
 

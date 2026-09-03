@@ -35,13 +35,18 @@ class CaidoClient:
         self._token = self._resolve_token()
         self._session = aiohttp.ClientSession()
         try:
-            info = await self.instance_info()
-        except CaidoError as e:
-            if "INVALID_TOKEN" in str(e) or "AUTHORIZATION" in str(e):
-                await self._login_as_guest()
+            try:
                 info = await self.instance_info()
-            else:
-                raise
+            except CaidoError as e:
+                if "INVALID_TOKEN" in str(e) or "AUTHORIZATION" in str(e):
+                    await self._login_as_guest()
+                    info = await self.instance_info()
+                else:
+                    raise
+        except BaseException:
+            await self._session.close()
+            self._session = None
+            raise
         return info
 
     async def _login_as_guest(self):
@@ -227,8 +232,10 @@ class CaidoClient:
                 if self._host_matches(host, pattern):
                     for deny in scope.get("denylist", []):
                         if self._host_matches(host, deny):
-                            return False
-                    return True
+                            break  # denied in this scope, try next
+                    else:
+                        return True
+                    break  # skip rest of allowlist for this scope
         return False
 
     @staticmethod

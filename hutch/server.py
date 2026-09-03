@@ -33,6 +33,7 @@ class HutchDaemon:
     async def start(self):
         await self.pool.start()
         self._running = True
+        self._started_at = time.time()
         os.makedirs(os.path.dirname(self.sock_path), exist_ok=True)
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
@@ -282,7 +283,7 @@ class HutchDaemon:
         return await handler(params)
 
     async def _rpc_ping(self, params):
-        return {"pong": True, "uptime": time.time()}
+        return {"pong": True, "uptime": time.time() - self._started_at}
 
     async def _rpc_create(self, params):
         name = params["name"]
@@ -406,7 +407,7 @@ class HutchDaemon:
 
     async def _rpc_set_headers(self, params):
         s = await self.pool.get(params["name"])
-        headers = {k: v for k, v in params.items() if k != "name"}
+        headers = params["headers"]
         await s.set_extra_headers(headers)
         return {"set": True}
 
@@ -525,7 +526,7 @@ class HutchDaemon:
             return [asdict(a) for a in mon.unacknowledged()]
         all_alerts = []
         for mon in self._health.values():
-            all_alerts.extend(mon.unacknowledged())
+            all_alerts.extend(asdict(a) for a in mon.unacknowledged())
         all_alerts.sort(key=lambda a: a["timestamp"], reverse=True)
         return all_alerts
 

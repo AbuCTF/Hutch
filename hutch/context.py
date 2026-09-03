@@ -74,6 +74,38 @@ class Diff:
 
 
 _BODY_MAX = 65536
+_BODY_MAX_RESPONSE = 1_048_576  # 1 MB default for response body capture
+
+_TEXT_CONTENT_TYPES = frozenset({
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/xhtml+xml",
+    "application/x-www-form-urlencoded",
+    "application/ld+json",
+    "application/manifest+json",
+    "application/graphql",
+    "application/soap+xml",
+    "application/graphql-response+json",
+    "application/csp-report",
+    "application/problem+json",
+    "application/vnd.api+json",
+})
+
+
+def _should_capture_body(content_type):
+    """Return True for text-based content types worth capturing."""
+    if not content_type:
+        return False
+    ct = content_type.split(";")[0].strip().lower()
+    if ct.startswith(("text/", "application/json")):
+        return True
+    if ct in _TEXT_CONTENT_TYPES:
+        return True
+    if ct.endswith(("+json", "+xml")):
+        return True
+    return False
 
 
 class RingBuffer:
@@ -122,7 +154,8 @@ class RingBuffer:
 
 class Context:
 
-    def __init__(self, network_cap=1000, console_cap=500):
+    def __init__(self, network_cap=1000, console_cap=500,
+                 max_body_size=_BODY_MAX_RESPONSE):
         self.network = RingBuffer(network_cap)
         self.console = RingBuffer(console_cap)
         self.errors = RingBuffer(console_cap)
@@ -132,6 +165,7 @@ class Context:
         self._pages = set()
         self._last_cookies = []
         self._subscribers = []
+        self._max_body_size = max_body_size
 
     def _next_seq(self):
         self._seq += 1
@@ -147,6 +181,7 @@ class Context:
         self._pages.add(id(page))
         page.on("request", self._on_request)
         page.on("response", self._on_response)
+        page.on("requestfailed", self._on_request_failed)
         page.on("console", self._on_console)
         page.on("pageerror", self._on_error)
         page.on("framenavigated", self._on_navigation)
@@ -171,7 +206,7 @@ class Context:
         )
         self._pending[request] = entry
 
-    def _on_response(self, response):
+    async def _on_response(self, response):
         entry = self._pending.pop(response.request, None)
         if not entry:
             entry = NetworkEntry(
@@ -188,8 +223,35 @@ class Context:
         entry.timing = (time.time() - entry.timestamp) * 1000
         entry.size = int(response.headers.get("content-length", 0))
 
+        # Capture response body for text-based content types within size limit
+        content_type = response.headers.get("content-type", "")
+        if _should_capture_body(content_type):
+            declared = int(response.headers.get("content-length", 0))
+            # Skip only if content-length explicitly exceeds the cap
+            if declared <= 0 or declared <= self._max_body_size:
+                try:
+                    raw = await response.body()
+                    if raw is not None and len(raw) <= self._max_body_size:
+                        entry.response_body = raw.decode(
+                            "utf-8", errors="replace")
+                        entry.size = len(raw)
+                except Exception:
+                    # body() can fail for redirects, WebSocket upgrades,
+                    # streaming responses, or if the page navigated away
+                    pass
+
         self.network.append(entry)
         self._emit("network", entry)
+
+    def _on_request_failed(self, request):
+        entry = self._pending.pop(request, None)
+        if entry:
+            failure = request.failure
+            entry.status = 0
+            entry.timing = (time.time() - entry.timestamp) * 1000
+            entry.response_headers = {"x-failure": failure or "unknown"}
+            self.network.append(entry)
+            self._emit("network", entry)
 
     def _on_console(self, msg):
         location = msg.location if hasattr(msg, "location") else {}
@@ -271,4 +333,5 @@ class Context:
         self.errors.clear()
         self.navigations.clear()
         self._pending.clear()
+        self._pages.clear()
         self._last_cookies = []

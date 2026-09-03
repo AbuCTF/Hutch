@@ -29,9 +29,15 @@ class ArtifactStore:
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _session_dir_path(self, session_name, subdir=None):
+        parts = [self.base_dir, session_name]
+        if subdir:
+            parts.append(subdir)
+        return os.path.join(*parts)
+
     def save_har(self, session_name, har_data, label=None):
         d = self._session_dir(session_name, "har")
-        ts = int(time.time())
+        ts = int(time.time() * 1000)
         suffix = f"-{label}" if label else ""
         path = os.path.join(d, f"{ts}{suffix}.har")
         with open(path, "w") as f:
@@ -42,7 +48,7 @@ class ArtifactStore:
 
     def save_screenshot(self, session_name, png_bytes, label=None):
         d = self._session_dir(session_name, "screenshots")
-        ts = int(time.time())
+        ts = int(time.time() * 1000)
         suffix = f"-{label}" if label else ""
         path = os.path.join(d, f"{ts}{suffix}.png")
         with open(path, "wb") as f:
@@ -53,7 +59,7 @@ class ArtifactStore:
 
     def save_snapshot(self, session_name, snapshot_data, label=None):
         d = self._session_dir(session_name, "snapshots")
-        ts = int(time.time())
+        ts = int(time.time() * 1000)
         suffix = f"-{label}" if label else ""
         path = os.path.join(d, f"{ts}{suffix}.json")
         with open(path, "w") as f:
@@ -94,7 +100,9 @@ class ArtifactStore:
             json.dump(notes, f, indent=2)
 
     def list_artifacts(self, session_name, type_filter=None):
-        base = self._session_dir(session_name)
+        base = self._session_dir_path(session_name)
+        if not os.path.isdir(base):
+            return []
         results = []
         for subdir in ("har", "screenshots", "snapshots"):
             d = os.path.join(base, subdir)

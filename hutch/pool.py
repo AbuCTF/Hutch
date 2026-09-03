@@ -1,8 +1,10 @@
 import asyncio
+import logging
 import os
 import shutil
 from dataclasses import asdict
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
@@ -12,6 +14,7 @@ from .session import Fingerprint, ProxyConfig, Session
 
 
 _DEFAULT_BASE_DIR = os.path.expanduser("~/.hutch/profiles")
+_log = logging.getLogger(__name__)
 
 
 class Pool:
@@ -20,6 +23,7 @@ class Pool:
         self.base_dir = base_dir or _DEFAULT_BASE_DIR
         self.max_sessions = max_sessions
         self._sessions = {}
+        self._launching = 0
         self._playwright = None
         self._pw_context = None
         self.caido = None
@@ -39,10 +43,10 @@ class Pool:
         if self.caido:
             await self.caido.close()
             self.caido = None
-        if self._pw_context:
+        if self._playwright:
             await self._playwright.stop()
-            self._pw_context = None
-            self._playwright = None
+        self._pw_context = None
+        self._playwright = None
 
     async def __aenter__(self):
         await self.start()
@@ -60,7 +64,11 @@ class Pool:
                 continue
             if name in self._sessions:
                 continue
-            session = Session.from_profile_dir(profile_dir)
+            try:
+                session = Session.from_profile_dir(profile_dir)
+            except Exception:
+                _log.warning("skipping corrupted profile: %s", profile_dir)
+                continue
             if session:
                 self._sessions[session.name] = session
 
@@ -69,12 +77,6 @@ class Pool:
                      launch=True, tags=None, caido=False):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
-
-        alive_count = sum(1 for s in self._sessions.values() if s.is_alive)
-        if launch and alive_count >= self.max_sessions:
-            raise RuntimeError(
-                f"max {self.max_sessions} simultaneous sessions"
-            )
 
         if caido:
             port = caido if isinstance(caido, int) else 8080
@@ -93,13 +95,22 @@ class Pool:
             ignore_https_errors=ignore_https_errors,
             tags=tags,
         )
-        self._sessions[name] = session
 
         if launch:
-            if not self._playwright:
-                raise RuntimeError("pool not started")
-            await session.launch(self._playwright)
+            self._launching += 1
+            try:
+                alive_count = sum(1 for s in self._sessions.values() if s.is_alive)
+                if alive_count + self._launching > self.max_sessions:
+                    raise RuntimeError(
+                        f"max {self.max_sessions} simultaneous sessions"
+                    )
+                if not self._playwright:
+                    raise RuntimeError("pool not started")
+                await session.launch(self._playwright)
+            finally:
+                self._launching -= 1
 
+        self._sessions[name] = session
         return session
 
     async def get(self, name, *, launch=False):
@@ -107,12 +118,16 @@ class Pool:
         if not session:
             raise KeyError(f"no session named '{name}'")
         if launch and not session.is_alive:
-            if not self._playwright:
-                raise RuntimeError("pool not started")
-            alive_count = sum(1 for s in self._sessions.values() if s.is_alive)
-            if alive_count >= self.max_sessions:
-                raise RuntimeError(f"max {self.max_sessions} simultaneous sessions")
-            await session.launch(self._playwright)
+            self._launching += 1
+            try:
+                if not self._playwright:
+                    raise RuntimeError("pool not started")
+                alive_count = sum(1 for s in self._sessions.values() if s.is_alive)
+                if alive_count + self._launching > self.max_sessions:
+                    raise RuntimeError(f"max {self.max_sessions} simultaneous sessions")
+                await session.launch(self._playwright)
+            finally:
+                self._launching -= 1
         return session
 
     async def launch(self, name):
@@ -216,7 +231,7 @@ class Pool:
                                     headless=True, tags=None, **kw):
         if not self.caido:
             raise RuntimeError("call setup_caido() first")
-        port = int(self.caido.config.url.rsplit(":", 1)[-1].rstrip("/"))
+        port = urlparse(self.caido.config.url).port or 8080
         return await self.create(
             name, caido=port, fingerprint=fingerprint,
             headless=headless, tags=tags, **kw)

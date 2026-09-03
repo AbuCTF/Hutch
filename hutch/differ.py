@@ -38,7 +38,7 @@ def diff_responses(entries_a, entries_b, session_a, session_b, *,
                    url_pattern=None, ignore_noise=True):
     by_url_a = {}
     for e in entries_a:
-        if url_pattern and url_pattern not in e.get("url", e.url if hasattr(e, "url") else ""):
+        if url_pattern and url_pattern not in _get_url(e):
             continue
         url = _get_url(e)
         method = _get_method(e)
@@ -47,7 +47,7 @@ def diff_responses(entries_a, entries_b, session_a, session_b, *,
 
     by_url_b = {}
     for e in entries_b:
-        if url_pattern and url_pattern not in e.get("url", e.url if hasattr(e, "url") else ""):
+        if url_pattern and url_pattern not in _get_url(e):
             continue
         url = _get_url(e)
         method = _get_method(e)
@@ -120,7 +120,7 @@ def _check_interesting(rd, body_a, body_b):
             notes.append(f"status_diff: {rd.status_a} vs {rd.status_b}")
             rd.interesting = True
 
-    if rd.body_match is False and body_a and body_b:
+    if rd.body_match is False and body_a is not None and body_b is not None:
         if rd.size_a > 0 and rd.size_b > 0:
             ratio = min(rd.size_a, rd.size_b) / max(rd.size_a, rd.size_b)
             if ratio < 0.5:
@@ -163,8 +163,8 @@ def _get_resp_headers(e):
 
 def _get_body(e):
     if isinstance(e, dict):
-        return e.get("response_body", "")
-    return getattr(e, "response_body", "")
+        return e.get("response_body")
+    return getattr(e, "response_body", None)
 
 
 def _diff_headers(a, b, ignore=None):

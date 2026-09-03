@@ -123,7 +123,7 @@ class SessionHandle:
 
     async def set_headers(self, headers):
         return await self._client._call("set_headers", {
-            "name": self.name, **headers})
+            "name": self.name, "headers": headers})
 
     async def block_urls(self, patterns):
         return await self._client._call("block_urls", {
@@ -502,36 +502,6 @@ class SessionHandle:
     async def cdp_close(self):
         return await self._client._call("cdp_close", {"name": self.name})
 
-    # --- raw mouse ---
-
-    async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
-        return await self._client._call("mouse_click", {
-            "name": self.name, "x": x, "y": y, "button": button,
-            "click_count": click_count, "delay": delay})
-
-    async def mouse_dblclick(self, x, y, *, button="left", delay=0):
-        return await self._client._call("mouse_dblclick", {
-            "name": self.name, "x": x, "y": y, "button": button,
-            "delay": delay})
-
-    async def mouse_move(self, x, y, *, steps=1):
-        return await self._client._call("mouse_move", {
-            "name": self.name, "x": x, "y": y, "steps": steps})
-
-    async def mouse_wheel(self, delta_x, delta_y):
-        return await self._client._call("mouse_wheel", {
-            "name": self.name, "delta_x": delta_x, "delta_y": delta_y})
-
-    # --- raw keyboard ---
-
-    async def keyboard_press(self, key):
-        return await self._client._call("keyboard_press", {
-            "name": self.name, "key": key})
-
-    async def keyboard_type(self, text, *, delay=0):
-        return await self._client._call("keyboard_type", {
-            "name": self.name, "text": text, "delay": delay})
-
     def __repr__(self):
         return f"<SessionHandle '{self.name}'>"
 
@@ -550,8 +520,14 @@ class HutchClient:
             raise HutchError(
                 f"daemon not running (no socket at {self.sock_path}) — "
                 "start it with 'hutch serve'")
-        self._reader, self._writer = await asyncio.open_unix_connection(
-            self.sock_path)
+        try:
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                self.sock_path)
+        except ConnectionRefusedError:
+            raise HutchError(
+                f"stale socket at {self.sock_path} — daemon is not running. "
+                "Remove the socket and start the daemon with 'hutch serve'"
+            ) from None
 
     async def close(self):
         if self._writer:
