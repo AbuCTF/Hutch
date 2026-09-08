@@ -297,7 +297,7 @@ class Session:
             )
         if self.stealth:
             from .stealth import apply_stealth
-            await apply_stealth(self._context, fingerprint=self._fingerprint)
+            await apply_stealth(self._context, fingerprint=self.fingerprint)
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
