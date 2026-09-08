@@ -143,3 +143,47 @@ async def test_hyprland_viewport_tracks_scaled_tile(tmp_path, monkeypatch):
     await session._sync_hyprland_viewport(page)
 
     assert page.viewport == {"width": 1232, "height": 1273}
+
+
+@pytest.mark.asyncio
+async def test_goto_syncs_viewport_after_navigation(tmp_path, monkeypatch):
+    session = Session(
+        "post-navigation-sync",
+        str(tmp_path / "profile"),
+        headless=False,
+        stealth=False,
+    )
+    calls = []
+
+    class Page:
+        def is_closed(self):
+            return False
+
+        async def goto(self, url, wait_until="load"):
+            calls.append(("goto", url, wait_until))
+
+    page = Page()
+    session._context = object()
+    session._pages = [page]
+
+    async def fake_sync(page):
+        calls.append(("sync", page))
+
+    async def fake_page_state():
+        calls.append(("state",))
+        return {"url": "https://example.com"}
+
+    monkeypatch.setattr(session, "_sync_hyprland_viewport", fake_sync)
+    monkeypatch.setattr(session, "page_state", fake_page_state)
+
+    state = await session.goto(
+        "https://example.com",
+        wait_until="domcontentloaded",
+    )
+
+    assert state == {"url": "https://example.com"}
+    assert calls == [
+        ("goto", "https://example.com", "domcontentloaded"),
+        ("sync", page),
+        ("state",),
+    ]

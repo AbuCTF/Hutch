@@ -400,8 +400,6 @@ class Session:
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
-        if self._pages:
-            await self._sync_hyprland_viewport(self._pages[-1])
         def _on_new_page(page):
             self._pages.append(page)
             self._setup_page(page)
@@ -717,6 +715,7 @@ class Session:
         self._last_activity = time.time()
         self._last_url = url
         await page.goto(url, wait_until=wait_until)
+        await self._sync_hyprland_viewport(page)
         return await self.page_state()
 
     @_retry_on_disconnect
