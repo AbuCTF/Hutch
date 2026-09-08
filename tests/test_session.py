@@ -91,13 +91,33 @@ async def test_hyprland_viewport_tracks_scaled_tile(tmp_path, monkeypatch):
         stealth=False,
     )
 
+    client_samples = iter([
+        {
+            "class": "hutch-browser-scaled-tile",
+            "at": [1536, 34],
+            "size": [2024, 662],
+            "monitor": 1,
+            "mapped": True,
+        },
+        {
+            "class": "hutch-browser-scaled-tile",
+            "at": [1548, 34],
+            "size": [1005, 1106],
+            "monitor": 1,
+            "mapped": True,
+        },
+    ])
+    stable_client = {
+        "class": "hutch-browser-scaled-tile",
+        "at": [1548, 34],
+        "size": [1005, 1106],
+        "monitor": 1,
+        "mapped": True,
+    }
+
     async def fake_hyprctl(resource):
         if resource == "clients":
-            return [{
-                "class": "hutch-browser-scaled-tile",
-                "at": [1548, 34],
-                "size": [1005, 1106],
-            }]
+            return [next(client_samples, stable_client)]
         return [{
             "name": "HDMI-A-2",
             "x": 1536,

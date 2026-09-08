@@ -310,18 +310,35 @@ class Session:
             return
 
         try:
+            # Hyprland can expose a newly mapped client before its tiling
+            # animation reaches the final workspace geometry.
+            await asyncio.sleep(0.35)
             client = None
             window_class = self._window_class()
-            for _ in range(20):
+            last_geometry = None
+            stable_samples = 0
+            for _ in range(30):
                 clients = await self._hyprctl_json("clients")
-                client = next(
+                current = next(
                     (c for c in clients if c.get("class") == window_class),
                     None,
                 )
-                if client:
+                if current:
+                    geometry = (
+                        tuple(current.get("at", ())),
+                        tuple(current.get("size", ())),
+                        current.get("monitor"),
+                    )
+                    if geometry == last_geometry and current.get("mapped", True):
+                        stable_samples += 1
+                    else:
+                        stable_samples = 0
+                    client = current
+                    last_geometry = geometry
+                if client and stable_samples >= 2:
                     break
                 await asyncio.sleep(0.05)
-            if not client:
+            if not client or stable_samples < 2:
                 return
 
             center_x = client["at"][0] + client["size"][0] / 2
