@@ -242,7 +242,10 @@ class Session:
             "--no-default-browser-check",
         ]
         if not self.headless:
-            chrome_args.append("--start-maximized")
+            chrome_args.extend([
+                "--class=hutch-browser",
+                "--start-maximized",
+            ])
         if fp.disable_webrtc:
             chrome_args.extend([
                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",

@@ -48,3 +48,17 @@ async def test_launch_passes_public_fingerprint_to_stealth(tmp_path, monkeypatch
     await session.launch(_FakePlaywright(context))
 
     assert captured == {"context": context, "fingerprint": fingerprint}
+
+
+def test_headed_launch_uses_dedicated_window_class(tmp_path):
+    session = Session(
+        "headed-window",
+        str(tmp_path / "profile"),
+        headless=False,
+        stealth=False,
+    )
+
+    args = session._launch_args()["args"]
+
+    assert "--class=hutch-browser" in args
+    assert "--start-maximized" in args
