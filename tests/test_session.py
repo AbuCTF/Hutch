@@ -4,10 +4,12 @@ from hutch.session import Fingerprint, Session
 
 
 class _FakeContext:
-    pages = []
+    def __init__(self):
+        self.pages = []
+        self.init_scripts = []
 
     async def add_init_script(self, script):
-        pass
+        self.init_scripts.append(script)
 
     def on(self, event, callback):
         pass
@@ -48,6 +50,24 @@ async def test_launch_passes_public_fingerprint_to_stealth(tmp_path, monkeypatch
     await session.launch(_FakePlaywright(context))
 
     assert captured == {"context": context, "fingerprint": fingerprint}
+    assert context.init_scripts == []
+
+
+@pytest.mark.asyncio
+async def test_non_stealth_platform_override_is_configurable(tmp_path):
+    context = _FakeContext()
+    session = Session(
+        "non-stealth-platform",
+        str(tmp_path / "profile"),
+        fingerprint=Fingerprint(platform="Linux x86_64"),
+        stealth=False,
+    )
+    session._start_watchdog = lambda: None
+
+    await session.launch(_FakePlaywright(context))
+
+    assert len(context.init_scripts) == 1
+    assert "configurable: true" in context.init_scripts[0]
 
 
 def test_headed_launch_uses_dedicated_window_class(tmp_path, monkeypatch):

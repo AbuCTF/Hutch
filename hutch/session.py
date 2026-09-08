@@ -390,9 +390,9 @@ class Session:
         self._launched_at = time.time()
         self._last_activity = time.time()
         self.state = SessionState.ACTIVE
-        if self.fingerprint.platform:
+        if self.fingerprint.platform and not self.stealth:
             await self._context.add_init_script(
-                f"Object.defineProperty(navigator, 'platform', {{get: () => '{self.fingerprint.platform}'}})"
+                f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{self.fingerprint.platform}'}})"
             )
         if self.stealth:
             from .stealth import apply_stealth
@@ -418,6 +418,17 @@ class Session:
         if self._intercept_rules:
             asyncio.ensure_future(self._apply_intercept_rules(page))
         self._track_websockets(page)
+        self._watch_hyprland_viewport(page)
+
+    def _watch_hyprland_viewport(self, page):
+        if getattr(page, "_hutch_hyprland_viewport_watched", False):
+            return
+
+        def resync_after_load():
+            asyncio.create_task(self._sync_hyprland_viewport(page))
+
+        page.on("load", resync_after_load)
+        page._hutch_hyprland_viewport_watched = True
 
     async def _apply_intercept_rules(self, page):
         """Apply all stored intercept rules to a page.

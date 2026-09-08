@@ -164,10 +164,10 @@ def _build_dynamic_script(fingerprint=None):
             hw_concurrency = 10
             device_memory = 16
 
-    parts.append(f"Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => {hw_concurrency}}});")
-    parts.append(f"Object.defineProperty(navigator, 'deviceMemory', {{get: () => {device_memory}}});")
-    parts.append(f"Object.defineProperty(navigator, 'platform', {{get: () => '{platform}'}});")
-    parts.append(f"Object.defineProperty(navigator, 'languages', {{get: () => {languages}}});")
+    parts.append(f"Object.defineProperty(navigator, 'hardwareConcurrency', {{configurable: true, get: () => {hw_concurrency}}});")
+    parts.append(f"Object.defineProperty(navigator, 'deviceMemory', {{configurable: true, get: () => {device_memory}}});")
+    parts.append(f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{platform}'}});")
+    parts.append(f"Object.defineProperty(navigator, 'languages', {{configurable: true, get: () => {languages}}});")
 
     return "(() => {\n" + "\n".join(parts) + "\n})();"
 
