@@ -139,12 +139,32 @@ class TestInterceptRPC:
         result = await s.block_urls(["**/analytics*", "**/tracking*"])
         assert result["blocked"] == 2
 
-    async def test_modify_headers_rpc(self, client):
+    async def test_modify_headers_rpc(self, client, daemon):
         s = await client.create("int-rpc2")
         result = await s.modify_headers(
             {"Authorization": "Bearer fake-token"},
             pattern="**/api/*")
         assert result["intercepted"] == "**/api/*"
+
+        _, handler = daemon.pool._sessions["int-rpc2"]._intercept_rules[-1]
+        assert handler.__code__.co_argcount == 1
+
+        continued = {}
+
+        class Request:
+            headers = {"accept": "application/json"}
+
+        class Route:
+            request = Request()
+
+            async def continue_(self, **kwargs):
+                continued.update(kwargs)
+
+        await handler(Route())
+        assert continued["headers"] == {
+            "accept": "application/json",
+            "Authorization": "Bearer fake-token",
+        }
 
     async def test_clear_intercepts_rpc(self, client):
         s = await client.create("int-rpc3")

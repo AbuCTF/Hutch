@@ -795,9 +795,9 @@ def create_mcp_server():
                 }))]
 
             if action == "modify_headers":
-                headers = arguments.get("headers", {})
-                async def _modify(route, _h=headers):
-                    merged = {**route.request.headers, **_h}
+                headers = dict(arguments.get("headers", {}))
+                async def _modify(route):
+                    merged = {**route.request.headers, **headers}
                     await route.continue_(headers=merged)
                 await session.intercept(pattern, _modify)
                 state = await _page_state(session)

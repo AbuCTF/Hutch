@@ -415,7 +415,7 @@ class HutchDaemon:
         s = await self.pool.get(params["name"])
         patterns = params["patterns"]
         for pat in patterns:
-            async def block(route, _pat=pat):
+            async def block(route):
                 await route.abort()
             await s.intercept(pat, block)
         return {"blocked": len(patterns)}
@@ -423,9 +423,9 @@ class HutchDaemon:
     async def _rpc_modify_headers(self, params):
         s = await self.pool.get(params["name"])
         pattern = params.get("pattern", "**/*")
-        headers = params["headers"]
-        async def modifier(route, _headers=headers):
-            req_headers = {**route.request.headers, **_headers}
+        headers = dict(params["headers"])
+        async def modifier(route):
+            req_headers = {**route.request.headers, **headers}
             await route.continue_(headers=req_headers)
         await s.intercept(pattern, modifier)
         return {"intercepted": pattern}
