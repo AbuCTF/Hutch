@@ -31,7 +31,8 @@ async def daemon():
     artifacts_dir = os.path.expanduser("~/.hutch/artifacts")
     for name in ("d-ping", "d-create", "d-snap", "d-nav", "d-net",
                  "d-console", "d-eval", "d-ss", "d-har", "d-notes",
-                 "d-health", "d-destroy", "d-multi-a", "d-multi-b"):
+                 "d-health", "d-destroy", "d-multi-a", "d-multi-b",
+                 "d-large-rpc"):
         p = os.path.join(artifacts_dir, name)
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
@@ -133,6 +134,15 @@ class TestDaemon:
         await s.note("auth", {"type": "bearer", "header": "Authorization"})
         notes = await s.notes()
         assert notes["auth"]["type"] == "bearer"
+
+    async def test_large_rpc_payload(self, client):
+        s = await client.create("d-large-rpc")
+        payload = "x" * (128 * 1024)
+        await s.note("large", payload)
+
+        notes = await s.notes()
+
+        assert notes["large"] == payload
 
     async def test_alerts(self, client):
         s = await client.create("d-health")

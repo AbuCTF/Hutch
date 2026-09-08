@@ -15,6 +15,7 @@ from .session import ProxyConfig, SessionState
 
 _DEFAULT_SOCK = os.path.expanduser("~/.hutch/hutch.sock")
 _DEFAULT_PID = os.path.expanduser("~/.hutch/hutch.pid")
+_RPC_BUFFER_LIMIT = 16 * 1024 * 1024
 
 
 class HutchDaemon:
@@ -38,7 +39,8 @@ class HutchDaemon:
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
         self._server = await asyncio.start_unix_server(
-            self._handle_client, path=self.sock_path)
+            self._handle_client, path=self.sock_path,
+            limit=_RPC_BUFFER_LIMIT)
         os.chmod(self.sock_path, 0o600)
         if self.idle_timeout > 0:
             self._idle_task = asyncio.create_task(self._idle_loop())

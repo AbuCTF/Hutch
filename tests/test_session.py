@@ -50,7 +50,8 @@ async def test_launch_passes_public_fingerprint_to_stealth(tmp_path, monkeypatch
     assert captured == {"context": context, "fingerprint": fingerprint}
 
 
-def test_headed_launch_uses_dedicated_window_class(tmp_path):
+def test_headed_launch_uses_dedicated_window_class(tmp_path, monkeypatch):
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
     session = Session(
         "headed-window",
         str(tmp_path / "profile"),
@@ -62,3 +63,19 @@ def test_headed_launch_uses_dedicated_window_class(tmp_path):
 
     assert "--class=hutch-browser" in args
     assert "--start-maximized" in args
+
+
+def test_hyprland_headed_launch_defers_geometry_to_compositor(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "test-instance")
+    session = Session(
+        "hyprland-window",
+        str(tmp_path / "profile"),
+        headless=False,
+        stealth=False,
+    )
+
+    args = session._launch_args()["args"]
+
+    assert "--class=hutch-browser" in args
+    assert "--start-maximized" not in args

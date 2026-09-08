@@ -242,10 +242,12 @@ class Session:
             "--no-default-browser-check",
         ]
         if not self.headless:
-            chrome_args.extend([
-                "--class=hutch-browser",
-                "--start-maximized",
-            ])
+            chrome_args.append("--class=hutch-browser")
+            # Hyprland owns tiled window geometry. Asking Chromium to maximize
+            # is commonly suppressed by compositor policy and can leave its
+            # render surface at the default size until DevTools forces a reset.
+            if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+                chrome_args.append("--start-maximized")
         if fp.disable_webrtc:
             chrome_args.extend([
                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",

@@ -506,6 +506,9 @@ class SessionHandle:
         return f"<SessionHandle '{self.name}'>"
 
 
+_RPC_BUFFER_LIMIT = 16 * 1024 * 1024
+
+
 class HutchClient:
 
     def __init__(self, sock_path=None):
@@ -522,7 +525,7 @@ class HutchClient:
                 "start it with 'hutch serve'")
         try:
             self._reader, self._writer = await asyncio.open_unix_connection(
-                self.sock_path)
+                self.sock_path, limit=_RPC_BUFFER_LIMIT)
         except ConnectionRefusedError:
             raise HutchError(
                 f"stale socket at {self.sock_path} — daemon is not running. "
