@@ -61,7 +61,7 @@ def test_headed_launch_uses_dedicated_window_class(tmp_path, monkeypatch):
 
     args = session._launch_args()["args"]
 
-    assert "--class=hutch-browser" in args
+    assert "--class=hutch-browser-headed-window" in args
     assert "--start-maximized" in args
 
 
@@ -77,5 +77,49 @@ def test_hyprland_headed_launch_defers_geometry_to_compositor(
 
     args = session._launch_args()["args"]
 
-    assert "--class=hutch-browser" in args
+    assert "--class=hutch-browser-hyprland-window" in args
     assert "--start-maximized" not in args
+
+
+@pytest.mark.asyncio
+async def test_hyprland_viewport_tracks_scaled_tile(tmp_path, monkeypatch):
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "test-instance")
+    session = Session(
+        "scaled-tile",
+        str(tmp_path / "profile"),
+        headless=False,
+        stealth=False,
+    )
+
+    async def fake_hyprctl(resource):
+        if resource == "clients":
+            return [{
+                "class": "hutch-browser-scaled-tile",
+                "at": [1548, 34],
+                "size": [1005, 1106],
+            }]
+        return [{
+            "name": "HDMI-A-2",
+            "x": 1536,
+            "y": 0,
+            "width": 2560,
+            "height": 1440,
+            "scale": 1.25,
+            "transform": 0,
+        }]
+
+    class Page:
+        viewport = None
+
+        async def evaluate(self, expression):
+            return {"dpr": 1, "chromeHeight": 85}
+
+        async def set_viewport_size(self, viewport):
+            self.viewport = viewport
+
+    monkeypatch.setattr(session, "_hyprctl_json", fake_hyprctl)
+    page = Page()
+
+    await session._sync_hyprland_viewport(page)
+
+    assert page.viewport == {"width": 1232, "height": 1273}

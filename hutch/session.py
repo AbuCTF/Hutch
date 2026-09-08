@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -233,6 +234,10 @@ class Session:
         s.state = SessionState.HIBERNATED
         return s
 
+    def _window_class(self):
+        suffix = re.sub(r"[^a-z0-9-]+", "-", self.name.lower()).strip("-")
+        return f"hutch-browser-{suffix[:48]}" if suffix else "hutch-browser"
+
     def _launch_args(self):
         fp = self.fingerprint
         chrome_args = [
@@ -242,7 +247,7 @@ class Session:
             "--no-default-browser-check",
         ]
         if not self.headless:
-            chrome_args.append("--class=hutch-browser")
+            chrome_args.append(f"--class={self._window_class()}")
             # Hyprland owns tiled window geometry. Asking Chromium to maximize
             # is commonly suppressed by compositor policy and can leave its
             # render surface at the default size until DevTools forces a reset.
@@ -288,6 +293,78 @@ class Session:
                 args["proxy"]["bypass"] = self.proxy.bypass
         return args
 
+    async def _hyprctl_json(self, resource):
+        process = await asyncio.create_subprocess_exec(
+            "hyprctl", "-j", resource,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=2)
+        if process.returncode:
+            raise RuntimeError(f"hyprctl {resource} failed")
+        return json.loads(stdout)
+
+    async def _sync_hyprland_viewport(self, page):
+        """Match a headed page viewport to its fractionally-scaled tile."""
+        if self.headless or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            return
+
+        try:
+            client = None
+            window_class = self._window_class()
+            for _ in range(20):
+                clients = await self._hyprctl_json("clients")
+                client = next(
+                    (c for c in clients if c.get("class") == window_class),
+                    None,
+                )
+                if client:
+                    break
+                await asyncio.sleep(0.05)
+            if not client:
+                return
+
+            center_x = client["at"][0] + client["size"][0] / 2
+            center_y = client["at"][1] + client["size"][1] / 2
+            monitor = None
+            for candidate in await self._hyprctl_json("monitors"):
+                scale = float(candidate.get("scale", 1.0)) or 1.0
+                width = candidate["width"] / scale
+                height = candidate["height"] / scale
+                if candidate.get("transform", 0) % 2:
+                    width, height = height, width
+                if (candidate["x"] <= center_x < candidate["x"] + width and
+                        candidate["y"] <= center_y < candidate["y"] + height):
+                    monitor = candidate
+                    break
+            if not monitor:
+                return
+
+            metrics = await page.evaluate("""({
+                dpr: window.devicePixelRatio || 1,
+                chromeHeight: Math.max(0, window.outerHeight - window.innerHeight)
+            })""")
+            dpr = max(float(metrics.get("dpr", 1.0)), 0.1)
+            scale = float(monitor.get("scale", 1.0)) or 1.0
+            margin = 24
+            width = max(320, int(
+                client["size"][0] * scale / dpr - margin / dpr
+            ))
+            height = max(320, int(
+                client["size"][1] * scale / dpr - margin / dpr -
+                float(metrics.get("chromeHeight", 0))
+            ))
+            await page.set_viewport_size({"width": width, "height": height})
+            _log.debug(
+                "session '%s': synced Hyprland viewport to %dx%d",
+                self.name, width, height,
+            )
+        except Exception as exc:
+            _log.debug(
+                "session '%s': Hyprland viewport sync skipped: %s",
+                self.name, exc,
+            )
+
     async def launch(self, playwright):
         if self._context:
             return self._context
@@ -306,6 +383,8 @@ class Session:
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
+        if self._pages:
+            await self._sync_hyprland_viewport(self._pages[-1])
         def _on_new_page(page):
             self._pages.append(page)
             self._setup_page(page)
