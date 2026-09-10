@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 stealth = ["playwright-stealth>=2.0"]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]
 dev = ["pytest>=7.0", "pytest-asyncio>=1.0"]
 all = ["hutch[stealth,caido,mcp]"]
 

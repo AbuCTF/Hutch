@@ -974,14 +974,36 @@ def create_mcp_server():
 
 def main():
     """Run the MCP server over stdio."""
-    import mcp.server.stdio
-    server = create_mcp_server()
-    asyncio.run(_run_mcp(server))
+    logging.basicConfig(level=logging.INFO)  # logs go to stderr; stdout is the MCP channel
+
+    try:
+        import importlib.metadata as _md
+
+        _mcp_ver = _md.version("mcp")
+        if int(_mcp_ver.split(".", 1)[0]) >= 2:
+            log.error(
+                "mcp %s is not supported: this server targets the mcp 1.x low-level "
+                "Server API. Pin 'mcp>=1.0,<2'.",
+                _mcp_ver,
+            )
+    except Exception:
+        pass
+
+    try:
+        server = create_mcp_server()
+        asyncio.run(_run_mcp(server))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    except Exception:
+        log.exception("MCP server failed to start")
+        raise
 
 
 async def _run_mcp(server):
-    import mcp.server.stdio
-    await mcp.server.stdio.run_async(server)
+    from mcp.server.stdio import stdio_server
+
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 if __name__ == "__main__":
