@@ -41,6 +41,7 @@ class Fingerprint:
     geolocation: Optional[dict] = None
     disable_webrtc: bool = True
     extra_headers: dict = field(default_factory=dict)
+    sec_ch_ua: Optional[str] = None     # client-hint brands, MUST match user_agent (else HeadlessChrome leaks)
 
 
 @dataclass
@@ -78,6 +79,50 @@ def _is_disconnect(exc):
         msg = str(exc).lower()
         return any(p in msg for p in _DISCONNECT_PATTERNS)
     return False
+
+
+def _ua_override_params(fp):
+    """Build CDP Network.setUserAgentOverride params so the UA header, the sec-ch-ua
+    client-hint HEADERS, navigator.userAgentData and Accept-Language ALL agree with the
+    fingerprint. Headless Chrome otherwise emits sec-ch-ua: "HeadlessChrome" and its real
+    engine version (a version/UA mismatch) — a dead giveaway that a JS-only override can't
+    fix (the headers are set by the network stack, not JS)."""
+    import re
+    ua = fp.user_agent or ""
+    m = re.search(r"Chrome/(\d+)(?:\.[\d.]+)?", ua)
+    major = m.group(1) if m else "137"
+    full = m.group(0).split("/", 1)[1] if m else "137.0.0.0"
+    brands = [{"brand": b, "version": v} for b, v in re.findall(r'"([^"]+)";v="([^"]+)"', fp.sec_ch_ua or "")]
+    if not brands:
+        brands = [{"brand": "Chromium", "version": major},
+                  {"brand": "Google Chrome", "version": major},
+                  {"brand": "Not=A?Brand", "version": "24"}]
+    full_list = [{"brand": b["brand"],
+                  "version": full if b["version"] == major else b["version"] + ".0.0.0"} for b in brands]
+    plat = fp.platform or "Win32"
+    if "Mac" in plat:
+        ua_plat, plat_ver, arch = "macOS", "10.15.7", "x86"
+    elif "Linux" in plat:
+        ua_plat, plat_ver, arch = "Linux", "6.5.0", "x86"
+    else:
+        ua_plat, plat_ver, arch = "Windows", "10.0.0", "x86"
+    return {
+        "userAgent": ua,
+        "acceptLanguage": fp.locale or "en-US",
+        "platform": plat,
+        "userAgentMetadata": {
+            "brands": brands,
+            "fullVersionList": full_list,
+            "fullVersion": full,
+            "platform": ua_plat,
+            "platformVersion": plat_ver,
+            "architecture": arch,
+            "model": "",
+            "mobile": bool(getattr(fp, "is_mobile", False)),
+            "bitness": "64",
+            "wow64": False,
+        },
+    }
 
 
 def _retry_on_disconnect(method=None, *, fallback=_SENTINEL):
@@ -400,6 +445,11 @@ class Session:
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
+        # apply the UA/client-hint override to initial pages NOW (awaited) so the first
+        # request carries the right sec-ch-ua, not racing the ensure_future in _setup_page.
+        if self.stealth and self.fingerprint and self.fingerprint.sec_ch_ua:
+            for page in self._pages:
+                await self._apply_ua_override(page)
         def _on_new_page(page):
             self._pages.append(page)
             self._setup_page(page)
@@ -417,8 +467,28 @@ class Session:
         # page.route() is async; batch into one coroutine with error handling
         if self._intercept_rules:
             asyncio.ensure_future(self._apply_intercept_rules(page))
+        # match sec-ch-ua client-hints to the fingerprint (no HeadlessChrome leak)
+        if self.stealth and self.fingerprint and self.fingerprint.sec_ch_ua:
+            asyncio.ensure_future(self._apply_ua_override(page))
         self._track_websockets(page)
         self._watch_hyprland_viewport(page)
+
+    async def _apply_ua_override(self, page):
+        """Pin the UA + sec-ch-ua client-hints + Accept-Language at the network layer via
+        CDP so they agree with the fingerprint. Idempotent per page."""
+        if getattr(page, "_hutch_ua_overridden", False):
+            return
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("Network.setUserAgentOverride", _ua_override_params(self.fingerprint))
+            # keep the CDP session ATTACHED — detaching reverts the override, re-leaking
+            # HeadlessChrome. Store it on the page so it lives as long as the page does.
+            page._hutch_ua_cdp = cdp
+            page._hutch_ua_overridden = True
+        except Exception as exc:
+            if _is_disconnect(exc):
+                return
+            _log.warning("session '%s': UA client-hint override failed: %s", self.name, exc)
 
     def _watch_hyprland_viewport(self, page):
         if getattr(page, "_hutch_hyprland_viewport_watched", False):

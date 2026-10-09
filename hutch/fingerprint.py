@@ -89,11 +89,9 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
     vw, vh = p["viewport"]
     sw, sh = p["screen"]
 
-    if not locale and not preset:
-        locale = rng.choice(_LOCALES)
-    if not timezone and not preset:
-        timezone = rng.choice(_TIMEZONES)
-
+    # Use the chosen preset's locale/timezone by default — a US-Windows UA with a random
+    # it-IT locale (the old behavior for program-seeded fingerprints) is internally
+    # inconsistent and detectable. Only override when the caller explicitly asks.
     return Fingerprint(
         viewport_width=vw,
         viewport_height=vh,
@@ -106,6 +104,7 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
         device_scale_factor=p.get("device_scale_factor", 1.0),
         geolocation=geolocation,
         disable_webrtc=True,
+        sec_ch_ua=p.get("sec_ch_ua"),   # carry the client-hint brands so they match the UA
     )
 
 
