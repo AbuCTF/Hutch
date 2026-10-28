@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import sys
+import shutil
 import time
+import weakref
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -16,6 +18,7 @@ from playwright._impl._errors import TargetClosedError
 
 from . import browser as _browser
 from .context import Context, Snapshot
+from .events import EventLog
 
 _log = logging.getLogger(__name__)
 
@@ -228,10 +231,15 @@ class Session:
         self._resume_event.set()
         self._pause_callbacks = []
         self._intercept_rules = []
-        self._dialog_handler = None
-        self._pending_dialog = None
+        self.events = EventLog()
+        self._dialog_policy = None
+        self._dialog_plans = deque()
+        self._agent_pages = weakref.WeakSet()
+        self._target_ids = weakref.WeakKeyDictionary()
+        self._file_chooser = None
+        self._downloads = {}
+        self._browser_cdp = None
         self._popup_pages = []
-        self._downloads = []
         self._cdp_session = None
         self._watchdog_task = None
         self._last_url = None
@@ -592,6 +600,60 @@ class Session:
         if info.get("headless") is not None:
             self.headless = info["headless"]
         self._browser.on("disconnected", lambda _: self._on_browser_gone())
+        await self._watch_downloads()
+
+    @property
+    def download_dir(self):
+        return os.path.join(self.profile_dir, "downloads")
+
+    async def _watch_downloads(self):
+        """Report downloads; a headless browser saves into the profile, a visible one where the human expects."""
+        params = {"behavior": "default", "eventsEnabled": True}
+        if self.headless:
+            os.makedirs(self.download_dir, exist_ok=True)
+            params = {"behavior": "allow", "downloadPath": self.download_dir, "eventsEnabled": True}
+        try:
+            cdp = await self._browser.new_browser_cdp_session()
+            cdp.on("Browser.downloadWillBegin", self._on_download_begin)
+            cdp.on("Browser.downloadProgress", self._on_download_progress)
+            await cdp.send("Browser.setDownloadBehavior", params)
+            self._browser_cdp = cdp
+        except Exception as exc:
+            _log.warning("session '%s': download events unavailable: %s", self.name, exc)
+
+    def _page_for_target(self, target_id):
+        for page, tid in list(self._target_ids.items()):
+            if tid == target_id and not page.is_closed():
+                return page
+        return None
+
+    def _on_download_begin(self, p):
+        page = self._page_for_target(p.get("frameId"))
+        info = {"url": p["url"], "filename": p["suggestedFilename"],
+                "tab": self._tab(page) if page else None}
+        self._downloads[p["guid"]] = info
+        self.events.emit("download", state="started", **info)
+
+    def _on_download_progress(self, p):
+        if p["state"] == "inProgress":
+            return
+        info = self._downloads.pop(p["guid"], {})
+        extra = {"path": p.get("filePath"), "bytes": p.get("receivedBytes")}
+        if not extra["path"] and p["state"] == "completed" and self.headless and info.get("filename"):
+            extra["path"] = os.path.join(self.download_dir, info["filename"])
+        self.events.emit("download", state=p["state"], **info, **extra)
+
+    async def _on_pw_download(self, page, download):
+        info = {"url": download.url, "filename": download.suggested_filename, "tab": self._tab(page)}
+        self.events.emit("download", state="started", **info)
+        os.makedirs(self.download_dir, exist_ok=True)
+        dest = os.path.join(self.download_dir, download.suggested_filename)
+        try:
+            await download.save_as(dest)
+            self.events.emit("download", state="completed", path=dest,
+                             bytes=os.path.getsize(dest), **info)
+        except Exception as exc:
+            self.events.emit("download", state="canceled", error=str(exc), **info)
 
     async def _apply_persona(self):
         if not self.persona:
@@ -639,11 +701,15 @@ class Session:
     def _setup_page(self, page):
         if self.context:
             self.context.hook_page(page)
-        if self._dialog_handler:
-            page.on("dialog", self._dialog_handler)
-        page.on("download", lambda dl: self._downloads.append(dl))
+        # a dialog listener on every tab stops playwright auto-dismissing the human's dialogs
+        page.on("dialog", lambda d, p=page: asyncio.ensure_future(self._on_dialog(p, d)))
+        page.on("download", lambda d, p=page: asyncio.ensure_future(self._on_pw_download(p, d)))
         page.on("popup", lambda popup, opener=page: self._follow_popup(opener, popup))
+        page.on("crash", lambda p: self.events.emit("crash", tab=self._tab(p), url=p.url))
         page.on("close", lambda _: self._on_page_closed())
+        if self.headless:
+            self._claim(page)
+        asyncio.ensure_future(self._remember_target(page))
         # propagate intercept rules to new pages (popups, target=_blank, etc.)
         # page.route() is async; batch into one coroutine with error handling
         if self._intercept_rules:
@@ -884,6 +950,7 @@ class Session:
         # to self._pages and calls _setup_page -- no explicit append here
         page = await self._context.new_page()
         self._focus = page
+        self._claim(page)
         self._last_activity = time.time()
         return page
 
@@ -896,6 +963,81 @@ class Session:
     def _follow_popup(self, opener, popup):
         if self._focus is None or self._focus is opener:
             self._focus = popup
+        if self._is_agent_page(opener):
+            self._claim(popup)
+        asyncio.ensure_future(self._report_popup(opener, popup))
+
+    async def _report_popup(self, opener, popup):
+        try:
+            await popup.wait_for_load_state("commit", timeout=5000)
+        except Exception:
+            pass
+        self.events.emit("popup", tab=self._tab(popup), opener=self._tab(opener),
+                         url=popup.url, agent=self._is_agent_page(popup))
+
+    def _claim(self, page):
+        """Mark a tab as the agent's: its dialogs are answered and file choosers intercepted."""
+        if page in self._agent_pages:
+            return
+        self._agent_pages.add(page)
+        page.on("filechooser", lambda fc, p=page: self._on_file_chooser(p, fc))
+
+    def _is_agent_page(self, page):
+        return self.headless or page in self._agent_pages
+
+    def _tab(self, page):
+        pages = [p for p in self._pages if not p.is_closed()]
+        return pages.index(page) if page in pages else None
+
+    async def _remember_target(self, page):
+        try:
+            self._target_ids[page] = await self.target_id(page)
+        except Exception:
+            pass
+
+    async def _on_dialog(self, page, dialog):
+        info = {"kind": dialog.type, "message": dialog.message, "url": page.url, "tab": self._tab(page)}
+        if dialog.type == "prompt":
+            info["default"] = dialog.default_value
+        if not self._is_agent_page(page):
+            self.events.emit("dialog", handled="human", **info)
+            return
+        if self._dialog_plans:
+            accept, text = self._dialog_plans.popleft()
+        elif self._dialog_policy:
+            accept, text = self._dialog_policy
+        else:
+            accept, text = dialog.type in ("alert", "beforeunload"), None
+        handled = "accepted" if accept else "dismissed"
+        try:
+            if accept:
+                await (dialog.accept(text) if text is not None and dialog.type == "prompt"
+                       else dialog.accept())
+            else:
+                await dialog.dismiss()
+        except Exception:
+            handled = "answered elsewhere"
+        if accept and text is not None and dialog.type == "prompt":
+            info["text"] = text
+        self.events.emit("dialog", handled=handled, **info)
+
+    def _on_file_chooser(self, page, chooser):
+        self._file_chooser = chooser
+        self.events.emit("filechooser", tab=self._tab(page), url=page.url,
+                         multiple=chooser.is_multiple())
+
+    async def set_files(self, files):
+        """Answer the file chooser an agent tab opened (see the 'filechooser' event)."""
+        chooser, self._file_chooser = self._file_chooser, None
+        if chooser is None:
+            raise RuntimeError("no file chooser is open")
+        await chooser.set_files(files)
+        return {"files": files if isinstance(files, list) else [files]}
+
+    def arm_dialog(self, accept=True, text=None):
+        """Answer the next dialog on an agent tab this way (once), instead of the policy."""
+        self._dialog_plans.append((bool(accept), text))
+        return {"queued": len(self._dialog_plans)}
 
     def _active_page(self):
         """The tab this session drives: its focus, else the newest open tab.
@@ -1628,6 +1770,7 @@ class Session:
         self._pages.remove(target)
         self._pages.append(target)
         self._focus = target
+        self._claim(target)
         await target.bring_to_front()
         return await self.page_state()
 
@@ -1667,44 +1810,36 @@ class Session:
 
     # --- download handling ---
 
-    async def expect_download(self, action_selector, *, save_path=None):
+    async def expect_download(self, action_selector, *, save_path=None, timeout=60.0):
         page = self._require_page()
-        async with page.expect_download() as dl_info:
-            await page.click(_ref(action_selector))
-        download = dl_info.value
-        result = {
-            "suggested_filename": download.suggested_filename,
-            "url": download.url,
-        }
-        if save_path:
-            await download.save_as(save_path)
+        seq = self.events.last
+        await page.click(_ref(action_selector))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            found = await self.events.wait(seq, {"download"}, max(0.0, deadline - loop.time()))
+            if not found:
+                raise TimeoutError(f"no download finished within {timeout:g}s")
+            seq = found[-1]["seq"]
+            done = [e for e in found if e["state"] != "started"]
+            if done:
+                break
+        event = done[0]
+        if event["state"] != "completed":
+            raise RuntimeError(f"download {event['state']}: {event.get('filename')}")
+        result = {"suggested_filename": event.get("filename"), "url": event.get("url"),
+                  "path": event.get("path")}
+        if save_path and event.get("path"):
+            shutil.copyfile(event["path"], save_path)
             result["saved_to"] = save_path
-        else:
-            path = await download.path()
-            result["temp_path"] = str(path) if path else None
         return result
 
     # --- dialog handling ---
 
     def handle_dialog(self, action="dismiss", prompt_text=None):
-        async def handler(dialog):
-            if action == "accept":
-                if prompt_text is not None:
-                    await dialog.accept(prompt_text)
-                else:
-                    await dialog.accept()
-            else:
-                await dialog.dismiss()
-
-        if self._dialog_handler:
-            for page in self._pages:
-                if not page.is_closed():
-                    page.remove_listener("dialog", self._dialog_handler)
-
-        self._dialog_handler = handler
-        for page in self._pages:
-            if not page.is_closed():
-                page.on("dialog", handler)
+        """Answer every agent-tab dialog this way; action 'auto' restores the default
+        (accept alerts and beforeunload, dismiss confirm and prompt)."""
+        self._dialog_policy = None if action == "auto" else (action == "accept", prompt_text)
 
     # --- page manipulation ---
 
@@ -2040,9 +2175,12 @@ class Session:
             self._focus = None
             self._pages = []
             self._popup_pages = []
-            self._downloads = []
+            self._downloads = {}
             self._websockets = []
-            self._pending_dialog = None
+            self._file_chooser = None
+            self._browser_cdp = None
+            self._agent_pages = weakref.WeakSet()
+            self._target_ids = weakref.WeakKeyDictionary()
             self._launched_at = None
             if clear_capture and self.context:
                 self.context.clear()
@@ -2056,14 +2194,12 @@ class Session:
         if not self._context:
             return
         await self._teardown(keep_browser=not self._owned)
-        self._dialog_handler = None
 
     async def detach(self):
         """Disconnect but leave the browser running (e.g. a human's headed window)."""
         if not self._context:
             return
         await self._teardown(keep_browser=True)
-        self._dialog_handler = None
 
     async def set_headless(self, headless, playwright=None):
         """Relaunch the same profile headed or headless; tabs and session state carry over."""

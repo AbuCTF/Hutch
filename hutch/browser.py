@@ -22,7 +22,7 @@ _CLONE_SKIP = {
     "SingletonLock", "SingletonSocket", "SingletonCookie", _PORT_FILE, _STATE_FILE, _LOG_FILE,
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache",
     "GraphiteDawnCache", "ShaderCache", "Crashpad", "BrowserMetrics", "component_crx_cache",
-    "optimization_guide_model_store", "trace.zip",
+    "optimization_guide_model_store", "trace.zip", "downloads",
 }
 
 

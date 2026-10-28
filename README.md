@@ -59,7 +59,11 @@ claude mcp add -s user hutch -- hutch-mcp      # Claude Code; any MCP client run
 
 `hutch_sessions` lists, creates and attaches sessions; `action: "view"` returns a live view URL
 for the human. `hutch_observe` returns an accessibility snapshot whose `[ref=e12]` refs every
-action accepts as a selector.
+action accepts as a selector. Dialogs, downloads, file choosers, popups and crashes land in a
+per-session event log; new events are appended to every tool result, and `hutch_events` waits for
+them, answers the next dialog or sets files on an open chooser. Agent tabs accept alerts and
+dismiss confirm/prompt unless told otherwise; dialogs on the human's tabs are left to the human.
+Downloads from a headless browser go to `<profile>/downloads`, a visible one keeps the usual folder.
 
 #### Google sign-in
 

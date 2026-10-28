@@ -267,6 +267,9 @@ class HutchDaemon:
             "expect_download": self._rpc_expect_download,
             # dialog
             "handle_dialog": self._rpc_handle_dialog,
+            "events": self._rpc_events,
+            "arm_dialog": self._rpc_arm_dialog,
+            "set_files": self._rpc_set_files,
             # page manipulation
             "set_content": self._rpc_set_content,
             "set_viewport_size": self._rpc_set_viewport_size,
@@ -873,6 +876,22 @@ class HutchDaemon:
         s.handle_dialog(action=params.get("action", "dismiss"),
                         prompt_text=params.get("prompt_text"))
         return {"handler_set": params.get("action", "dismiss")}
+
+    async def _rpc_events(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        types = set(params["types"]) if params.get("types") else None
+        since = params.get("since", 0)
+        if params.get("wait"):
+            return {"events": await s.events.wait(since, types, float(params["wait"]))}
+        return {"events": s.events.since(since, types)}
+
+    async def _rpc_arm_dialog(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return s.arm_dialog(params.get("accept", True), params.get("text"))
+
+    async def _rpc_set_files(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return await s.set_files(params["files"])
 
     # --- page manipulation ---
 

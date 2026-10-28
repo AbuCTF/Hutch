@@ -38,10 +38,19 @@
       tabs, URL bar; follows popups from the viewed tab; reachable from Windows under NAT
 - [x] agents start a stopped profile headless (a remembered headed mode no longer pops a window)
 
+### v0.13.0 — done
+
+- [x] event log per session: dialogs, downloads, file choosers, popups, crashes; MCP appends new
+      events to every tool result; `hutch_events` list / wait / dialog / policy / files; daemon + client
+- [x] dialogs: a listener on every tab stops playwright auto-dismissing the human's dialogs; agent tabs
+      answered by one-shot plan, policy, or default (accept alert/beforeunload, dismiss confirm/prompt)
+- [x] downloads over CDP (`Browser.setDownloadBehavior` events): headless saves to `<profile>/downloads`,
+      headed keeps the user's folder; `expect_download` works on native sessions again
+- [x] file choosers intercepted only on agent tabs; MCP `upload` action; live view shows and answers dialogs
+
 ### Next
 
 - [ ] snapshot diffs, interactive-only snapshot, annotated screenshots
-- [ ] event bus: dialogs, downloads, file choosers, popups pushed to agents
 - [ ] command registry generating RPC / CLI / MCP / client (removes the triple hand-written API)
 - [ ] secrets vault (`{{name}}` placeholders), record → replay / export
 - [ ] byte-budgeted capture buffers, artifact retention, `hutch gc`

@@ -390,6 +390,17 @@ class SessionHandle:
         return await self._client._call("handle_dialog", {
             "name": self.name, "action": action, "prompt_text": prompt_text})
 
+    async def events(self, *, since=0, types=None, wait=0):
+        r = await self._client._call("events", {
+            "name": self.name, "since": since, "types": list(types) if types else None, "wait": wait})
+        return r["events"]
+
+    async def arm_dialog(self, *, accept=True, text=None):
+        return await self._client._call("arm_dialog", {"name": self.name, "accept": accept, "text": text})
+
+    async def set_files(self, files):
+        return await self._client._call("set_files", {"name": self.name, "files": files})
+
     # --- page manipulation ---
 
     async def set_content(self, html, *, wait_until="load"):

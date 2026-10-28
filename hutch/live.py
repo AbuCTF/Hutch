@@ -150,6 +150,11 @@ class _Bridge:
             try:
                 if method == "Page.screencastFrame":
                     await self._frame(e.get("sessionId"), p)
+                elif method == "Page.javascriptDialogOpening" and e.get("sessionId") == self.session:
+                    await self._send({"t": "dialog", "kind": p["type"], "message": p["message"],
+                                      "default": p.get("defaultPrompt", "")})
+                elif method == "Page.javascriptDialogClosed" and e.get("sessionId") == self.session:
+                    await self._send({"t": "dialog_closed"})
                 elif method in ("Target.targetCreated", "Target.targetInfoChanged"):
                     info = p["targetInfo"]
                     if info["type"] != "page":
@@ -216,6 +221,11 @@ class _Bridge:
             if 0 <= i < len(h["entries"]):
                 await self.cdp.send("Page.navigateToHistoryEntry",
                                     {"entryId": h["entries"][i]["id"]}, s)
+        elif t == "dialog" and s:
+            params = {"accept": bool(d.get("accept"))}
+            if d.get("text") is not None:
+                params["promptText"] = d["text"]
+            await self.cdp.send("Page.handleJavaScriptDialog", params, s)
         elif t == "reload" and s:
             await self.cdp.send("Page.reload", session=s)
         elif t == "tab" and d.get("id") in self.tabs:
@@ -324,7 +334,12 @@ button:hover{background:#383b41}
 #st{display:flex;align-items:center;gap:6px;color:var(--mute);padding:0 6px;white-space:nowrap}
 #st i{width:8px;height:8px;border-radius:50%;background:var(--off)}
 #st.live i{background:var(--ok)}
-#wrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#wrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#dlg{position:absolute;top:12px;left:50%;transform:translateX(-50%);display:none;gap:8px;align-items:center;max-width:min(640px,92%);padding:10px 12px;background:var(--on);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0008}
+#dlg.on{display:flex;flex-wrap:wrap}
+#dlg p{margin:0;flex:1 1 100%;white-space:pre-wrap;word-break:break-word}
+#dlg input{flex:1;min-width:0;height:28px;background:var(--bar);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:0 8px;font:inherit}
+#dlg button{width:auto;padding:0 12px;font-size:13px;border:1px solid var(--line)}
 canvas{max-width:100%;max-height:100%;outline:none;background:#fff}
 </style></head><body>
 <div id="tabs"></div>
@@ -333,7 +348,8 @@ canvas{max-width:100%;max-height:100%;outline:none;background:#fff}
 <input id="url" spellcheck="false" autocomplete="off"><button id="new" title="New tab">+</button>
 <span id="st"><i></i><span>connecting</span></span>
 </div>
-<div id="wrap"><canvas id="c" tabindex="0" width="1280" height="720"></canvas></div>
+<div id="wrap"><canvas id="c" tabindex="0" width="1280" height="720"></canvas>
+<div id="dlg"><p></p><input><button id="ok">OK</button><button id="no">Cancel</button></div></div>
 <script>
 const $ = id => document.getElementById(id);
 const c = $("c"), ctx = c.getContext("2d"), url = $("url"), tabsEl = $("tabs"), st = $("st");
@@ -357,6 +373,8 @@ function connect() {
     else if (m.t === "tabs") { cur = m.current; tabs(m.tabs); }
     else if (m.t === "clip") { navigator.clipboard && navigator.clipboard.writeText(m.text).catch(() => {}); }
     else if (m.t === "gone") { gone = true; }
+    else if (m.t === "dialog") { dialog(m); }
+    else if (m.t === "dialog_closed") { dlg.className = ""; }
   };
 }
 
@@ -421,6 +439,17 @@ $("back").onclick = () => send({ t: "back" });
 $("fwd").onclick = () => send({ t: "forward" });
 $("rel").onclick = () => send({ t: "reload" });
 $("new").onclick = () => { send({ t: "newtab" }); url.focus(); };
+const dlg = $("dlg"), dlgIn = dlg.querySelector("input");
+function dialog(m) {
+  dlg.querySelector("p").textContent = m.message;
+  dlgIn.style.display = m.kind === "prompt" ? "" : "none"; dlgIn.value = m.default || "";
+  $("no").style.display = m.kind === "alert" ? "none" : "";
+  dlg.className = "on"; (m.kind === "prompt" ? dlgIn : $("ok")).focus();
+}
+const answer = accept => { send({ t: "dialog", accept, text: dlgIn.style.display ? undefined : dlgIn.value }); dlg.className = ""; c.focus(); };
+$("ok").onclick = () => answer(true);
+$("no").onclick = () => answer(false);
+dlgIn.addEventListener("keydown", e => { if (e.key === "Enter") answer(true); if (e.key === "Escape") answer(false); });
 connect();
 c.focus();
 </script></body></html>

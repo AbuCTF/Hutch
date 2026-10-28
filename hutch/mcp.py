@@ -44,6 +44,35 @@ def create_mcp_server():
         pool = await _get_pool()
         return await pool.get(name, launch=True)
 
+    _event_cursor = {}
+
+    def _event_line(e):
+        t, tab = e["type"], e.get("tab")
+        where = f" tab {tab}" if tab is not None else ""
+        if t == "dialog":
+            return (f"#{e['seq']} {e['kind']} on{where or ' a tab'}: {e['message']!r}, "
+                    + ("left for the human" if e["handled"] == "human" else e["handled"]))
+        if t == "download":
+            target = e.get("path") or e.get("url")
+            return f"#{e['seq']} download {e['state']}: {e.get('filename')} {target or ''}".rstrip()
+        if t == "filechooser":
+            return (f"#{e['seq']} file chooser on{where}, answer with hutch_events action=files"
+                    + (" (multiple)" if e.get("multiple") else ""))
+        if t == "popup":
+            return f"#{e['seq']} popup{where} from tab {e.get('opener')}: {e.get('url')}"
+        return f"#{e['seq']} {t}{where} {e.get('url', '')}".rstrip()
+
+    def _new_events(name):
+        """Events the agent has not seen yet, appended to every tool result for that session."""
+        session = _pool._sessions.get(name) if _pool else None
+        if session is None:
+            return None
+        found = session.events.since(_event_cursor.get(name, 0))
+        if not found:
+            return None
+        _event_cursor[name] = found[-1]["seq"]
+        return "events:\n" + "\n".join(_event_line(e) for e in found)
+
     async def _page_state(session) -> dict:
         """Grab url+title from the active page (cheap feedback)."""
         page = session._active_page()
@@ -214,8 +243,9 @@ def create_mcp_server():
                 description=(
                     "Interact with page elements. Actions: click, fill, type, "
                     "press, select, hover, scroll, dblclick, check, uncheck, "
-                    "right_click, tap, focus. Target by CSS selector or element "
-                    "index from observe. Returns page state after action."
+                    "right_click, tap, focus, upload (set files on a file input: value is a "
+                    "comma-separated list of absolute paths). Target by ref from hutch_observe, "
+                    "CSS selector or element index. Returns page state after action."
                 ),
                 inputSchema={
                     "type": "object",
@@ -226,7 +256,7 @@ def create_mcp_server():
                             "enum": [
                                 "click", "fill", "type", "press", "select",
                                 "hover", "scroll", "dblclick", "check",
-                                "uncheck", "right_click", "tap", "focus",
+                                "uncheck", "right_click", "tap", "focus", "upload",
                             ],
                             "description": "Interaction type",
                         },
@@ -482,16 +512,54 @@ def create_mcp_server():
                     "required": ["session"],
                 },
             ),
+            Tool(
+                name="hutch_events",
+                description=(
+                    "Dialogs, downloads, file choosers, popups and crashes, in order. New events are "
+                    "also appended to every hutch tool result. Agent tabs answer dialogs "
+                    "automatically: alerts and beforeunload accepted, confirm and prompt dismissed. "
+                    "Actions: list (events after 'since'), wait (block until one of 'types' arrives), "
+                    "dialog (answer the next dialog with accept/text, once), policy (accept, dismiss "
+                    "or auto for every dialog), files (answer an open file chooser with paths)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string", "description": "Session name"},
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "wait", "dialog", "policy", "files"],
+                            "default": "list",
+                        },
+                        "since": {"type": "integer", "default": 0, "description": "Only events with a higher seq"},
+                        "types": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["dialog", "download", "filechooser", "popup", "crash"]},
+                        },
+                        "timeout": {"type": "number", "default": 30, "description": "Seconds to wait"},
+                        "accept": {"type": "boolean", "default": True},
+                        "text": {"type": "string", "description": "Prompt answer"},
+                        "policy": {"type": "string", "enum": ["accept", "dismiss", "auto"]},
+                        "files": {"type": "array", "items": {"type": "string"}, "description": "Absolute file paths"},
+                    },
+                    "required": ["session"],
+                },
+            ),
         ]
 
     # ---------------------------------------------------------- call_tool
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         try:
-            return await _dispatch(name, arguments)
+            result = await _dispatch(name, arguments)
         except Exception as e:
             log.exception("tool %s failed", name)
-            return [TextContent(type="text", text=f"error: {e}")]
+            result = [TextContent(type="text", text=f"error: {e}")]
+        sname = arguments.get("session") or (arguments.get("name") if name == "hutch_sessions" else None)
+        trailer = _new_events(sname) if sname and name != "hutch_events" else None
+        if trailer:
+            result = list(result) + [TextContent(type="text", text=trailer)]
+        return result
 
     async def _dispatch(name: str, arguments: dict):
         from mcp.types import TextContent, ImageContent
@@ -697,6 +765,11 @@ def create_mcp_server():
                 value = arguments.get("value", "")
                 result = await session.select_option(selector, value)
                 return [TextContent(type="text", text=_json(result))]
+
+            if action == "upload":
+                files = [f.strip() for f in arguments.get("value", "").split(",") if f.strip()]
+                await session.set_input_files(selector, files)
+                return [TextContent(type="text", text=_json(await _page_state(session)))]
 
             if action == "hover":
                 result = await session.hover(selector)
@@ -973,6 +1046,29 @@ def create_mcp_server():
             return [TextContent(type="text", text=_json(pool.status()))]
 
         # ------ hutch_auth
+        if name == "hutch_events":
+            session = await _get_session(arguments["session"])
+            action = arguments.get("action", "list")
+            types = set(arguments["types"]) if arguments.get("types") else None
+            if action in ("list", "wait"):
+                since = arguments.get("since", 0)
+                if action == "wait":
+                    found = await session.events.wait(since, types, float(arguments.get("timeout", 30)))
+                else:
+                    found = session.events.since(since, types)
+                if found:
+                    _event_cursor[session.name] = max(_event_cursor.get(session.name, 0), found[-1]["seq"])
+                return [TextContent(type="text", text=_json(found) if found else "no events")]
+            if action == "dialog":
+                return [TextContent(type="text", text=_json(
+                    session.arm_dialog(arguments.get("accept", True), arguments.get("text"))))]
+            if action == "policy":
+                session.handle_dialog(arguments.get("policy", "auto"), arguments.get("text"))
+                return [TextContent(type="text", text=f"dialog policy: {arguments.get('policy', 'auto')}")]
+            if action == "files":
+                return [TextContent(type="text", text=_json(await session.set_files(arguments["files"])))]
+            return [TextContent(type="text", text=f"error: unknown action '{action}'")]
+
         if name == "hutch_auth":
             session = await _get_session(arguments["session"])
             action = arguments.get("action", "export")
