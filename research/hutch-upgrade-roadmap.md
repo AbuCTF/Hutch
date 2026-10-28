@@ -56,9 +56,15 @@
       unnamed inputs
 - [x] annotated screenshots from `aria_snapshot(boxes=True)` (one call, iframe offsets applied), with legend
 
+### v0.15.0 — done
+
+- [x] command registry read from `Session` (signatures + docstrings): daemon falls back to it, 33
+      pass-through RPC wrappers deleted, client `__getattr__` fallback with positionals, MCP `hutch_call`,
+      `hutch call <name> <cmd> ...` (httpie-style `key=value` / `key:=json`); 106 commands everywhere
+- [x] curated MCP tools stay (grouped actions are easier for models than 106 tools); `hutch_call` covers the rest
+
 ### Next
 
-- [ ] command registry generating RPC / CLI / MCP / client (removes the triple hand-written API)
 - [ ] secrets vault (`{{name}}` placeholders), record → replay / export
 - [ ] byte-budgeted capture buffers, artifact retention, `hutch gc`
 - [ ] Windows transport (loopback TCP + token), PDEATHSIG equivalent (job objects)

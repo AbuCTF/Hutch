@@ -17,6 +17,19 @@ class SessionHandle:
         self._client = client
         self.name = name
 
+    def __getattr__(self, command):
+        """Any session command the daemon knows, as keyword-only calls: await s.mouse_down(button="left")."""
+        if command.startswith("_"):
+            raise AttributeError(command)
+
+        async def call(*positional, **args):
+            params = {"name": self.name, **args}
+            if positional:
+                params["_positional"] = list(positional)
+            return await self._client._call(command, params)
+        call.__name__ = command
+        return call
+
     async def goto(self, url, *, wait_until="load"):
         return await self._client._call("goto", {
             "name": self.name, "url": url, "wait_until": wait_until})
@@ -618,6 +631,9 @@ class HutchClient:
     async def session(self, name):
         await self._call("session", {"name": name})
         return SessionHandle(self, name)
+
+    async def commands(self, command=None):
+        return (await self._call("commands", {"command": command}))["commands"]
 
     async def list(self, *, alive_only=False):
         return await self._call("list", {"alive_only": alive_only})

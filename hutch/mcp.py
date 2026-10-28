@@ -529,6 +529,23 @@ def create_mcp_server():
                 },
             ),
             Tool(
+                name="hutch_call",
+                description=(
+                    "Run any session command by name when no dedicated hutch tool covers it: "
+                    "low-level mouse/keyboard, cookies, headers, frames, storage, tracing, pdf, "
+                    "geolocation, media emulation and more. command='help' lists every command "
+                    "with its signature; args are keyword arguments by parameter name."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string", "description": "Session name (not needed for help)"},
+                        "command": {"type": "string", "default": "help"},
+                        "args": {"type": "object", "description": "Keyword arguments, e.g. {\"x\": 10, \"y\": 20}"},
+                    },
+                },
+            ),
+            Tool(
                 name="hutch_events",
                 description=(
                     "Dialogs, downloads, file choosers, popups and crashes, in order. New events are "
@@ -1070,6 +1087,23 @@ def create_mcp_server():
             return [TextContent(type="text", text=_json(pool.status()))]
 
         # ------ hutch_auth
+        if name == "hutch_call":
+            from hutch import commands
+            command = arguments.get("command") or "help"
+            if command == "help":
+                rows = commands.describe()
+                return [TextContent(type="text", text="\n".join(
+                    f"{r['signature']}  {r['doc']}".rstrip() for r in rows))]
+            if not arguments.get("session"):
+                return [TextContent(type="text", text="error: 'session' is required")]
+            session = await _get_session(arguments["session"])
+            result = await commands.call(session, command, arguments.get("args") or {})
+            data = result.get("base64") if isinstance(result, dict) and len(result) == 1 else None
+            if data and data.startswith(("iVBOR", "/9j/")):
+                mime = "image/png" if data.startswith("iVBOR") else "image/jpeg"
+                return [ImageContent(type="image", data=data, mimeType=mime)]
+            return [TextContent(type="text", text=_state(result))]
+
         if name == "hutch_events":
             session = await _get_session(arguments["session"])
             action = arguments.get("action", "list")

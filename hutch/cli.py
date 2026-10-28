@@ -317,6 +317,45 @@ async def cmd_open(_pool, args):
     await cmd_browse(None, args)
 
 
+def _arg(value):
+    """Numbers, true, false and null become JSON values; everything else stays a string."""
+    if value in ("true", "false", "null") or re.fullmatch(r"-?\d+(\.\d+)?", value):
+        return json.loads(value)
+    return value
+
+
+async def cmd_call(pool, args):
+    from . import commands
+    if args.name == "help" or args.cmd in (None, "help"):
+        for row in commands.describe(args.cmd if args.cmd not in (None, "help") else None):
+            print(f"{row['signature']}  {row['doc']}".rstrip())
+        return
+    positional, kw = [], {}
+    for token in args.args:
+        key, eq, value = token.partition("=")
+        if eq and key.endswith(":") and key[:-1].isidentifier():
+            kw[key[:-1]] = json.loads(value)
+        elif eq and key.isidentifier():
+            kw[key] = _arg(value)
+        else:
+            positional.append(_arg(token))
+    s = _load(args, args.name)
+    if not s.endpoint and not browser.status(s.profile_dir):
+        _launch(s, headless=True)
+    s = await pool.get(args.name, launch=True)
+    result = await commands.call(s, args.cmd, kw, positional)
+    if isinstance(result, dict) and "dom" in result:
+        print(f"{result.get('url', '')}  {result.get('title', '')}")
+        if result.get("changes") is not None:
+            print(result["changes"] or "no changes")
+        elif result.get("dom"):
+            print(result["dom"])
+    elif isinstance(result, str):
+        print(result)
+    elif result is not None:
+        print(json.dumps(result, indent=2))
+
+
 async def cmd_screenshot(pool, args):
     s = await pool.get(args.name, launch=True)
     page = None
@@ -504,12 +543,13 @@ async def _run(args):
     try:
         async with Pool(base_dir=args.base_dir, max_sessions=args.max_sessions) as pool:
             await args.func(pool, args)
-    except (KeyError, ValueError, RuntimeError) as e:
-        print(f"hutch: {e.args[0] if isinstance(e, KeyError) else e}", file=sys.stderr)
+    except Exception as e:
+        message = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+        print(f"hutch: {message.splitlines()[0] if message else type(e).__name__}", file=sys.stderr)
         sys.exit(1)
 
 
-_POOL_COMMANDS = {"screenshot"}
+_POOL_COMMANDS = {"screenshot", "call"}
 
 
 def main():
@@ -533,6 +573,7 @@ def main():
             "  headed <name>         show a headless browser\n"
             "  headless <name>       hide a browser\n"
             "  view <name>           watch and drive a browser from a web page\n"
+            "  call <name> <cmd> ... run any session command: hutch call help\n"
             "  tabs <name|target>    list open tabs\n"
             "  ps                    running browsers and memory\n"
             "  stop <name>|--all     close a browser, keep the profile\n"
@@ -637,6 +678,12 @@ def main():
     c = _sub("tabs")
     c.add_argument("name", help="session name or attach target (brave, chrome, edge, port)")
     c.set_defaults(func=cmd_tabs)
+
+    c = _sub("call")
+    c.add_argument("name", help="session name, or help")
+    c.add_argument("cmd", nargs="?", help="command, or help")
+    c.add_argument("args", nargs=argparse.REMAINDER, help="values, key=value strings, key:=json")
+    c.set_defaults(func=cmd_call)
 
     c = _sub("view")
     c.add_argument("name", help="session name")

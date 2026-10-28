@@ -5,7 +5,7 @@ import signal
 import time
 from dataclasses import asdict
 
-from . import __version__
+from . import __version__, commands
 from .artifacts import ArtifactStore
 from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
@@ -172,24 +172,16 @@ class HutchDaemon:
             "list": self._rpc_list,
             "close": self._rpc_close,
             "destroy": self._rpc_destroy,
-            "goto": self._rpc_goto,
             "click": self._rpc_click,
-            "fill": self._rpc_fill,
-            "type": self._rpc_type,
-            "press": self._rpc_press,
-            "select_option": self._rpc_select_option,
             "wait_for": self._rpc_wait_for,
             "evaluate": self._rpc_evaluate,
-            "cookies": self._rpc_cookies,
             "set_cookie": self._rpc_set_cookie,
             "delete_cookies": self._rpc_delete_cookies,
-            "storage": self._rpc_storage,
             "set_storage": self._rpc_set_storage,
             "set_headers": self._rpc_set_headers,
             "block_urls": self._rpc_block_urls,
             "modify_headers": self._rpc_modify_headers,
             "clear_intercepts": self._rpc_clear_intercepts,
-            "observe": self._rpc_observe,
             "snapshot": self._rpc_snapshot,
             "diff": self._rpc_diff,
             "screenshot": self._rpc_screenshot,
@@ -214,21 +206,10 @@ class HutchDaemon:
             "view": self._rpc_view,
             "aria_snapshot": self._rpc_aria_snapshot,
             # navigation
-            "go_back": self._rpc_go_back,
-            "go_forward": self._rpc_go_forward,
-            "reload": self._rpc_reload,
             # interaction
-            "hover": self._rpc_hover,
             "dblclick": self._rpc_dblclick,
             "focus": self._rpc_focus,
-            "check": self._rpc_check,
-            "uncheck": self._rpc_uncheck,
-            "set_checked": self._rpc_set_checked,
-            "set_input_files": self._rpc_set_input_files,
-            "drag_and_drop": self._rpc_drag_and_drop,
-            "right_click": self._rpc_right_click,
             "scroll": self._rpc_scroll,
-            "tap": self._rpc_tap,
             "dispatch_event": self._rpc_dispatch_event,
             # content
             "content": self._rpc_content,
@@ -244,7 +225,6 @@ class HutchDaemon:
             "is_hidden": self._rpc_is_hidden,
             "is_editable": self._rpc_is_editable,
             # frames
-            "frames": self._rpc_frames,
             "frame_evaluate": self._rpc_frame_evaluate,
             "frame_click": self._rpc_frame_click,
             "frame_fill": self._rpc_frame_fill,
@@ -254,25 +234,14 @@ class HutchDaemon:
             "locator_click": self._rpc_locator_click,
             "locator_fill": self._rpc_locator_fill,
             # waits
-            "wait_for_function": self._rpc_wait_for_function,
-            "wait_for_load_state": self._rpc_wait_for_load_state,
-            "wait_for_response": self._rpc_wait_for_response,
-            "wait_for_request": self._rpc_wait_for_request,
             # tabs/pages
-            "pages": self._rpc_pages,
-            "switch_page": self._rpc_switch_page,
-            "close_page": self._rpc_close_page,
             "expect_popup": self._rpc_expect_popup,
             # downloads
             "expect_download": self._rpc_expect_download,
             # dialog
             "handle_dialog": self._rpc_handle_dialog,
             "events": self._rpc_events,
-            "arm_dialog": self._rpc_arm_dialog,
-            "set_files": self._rpc_set_files,
             # page manipulation
-            "set_content": self._rpc_set_content,
-            "set_viewport_size": self._rpc_set_viewport_size,
             "emulate_media": self._rpc_emulate_media,
             "add_script": self._rpc_add_script,
             "add_style": self._rpc_add_style,
@@ -297,16 +266,20 @@ class HutchDaemon:
             "mouse_dblclick": self._rpc_mouse_dblclick,
             "mouse_move": self._rpc_mouse_move,
             "mouse_wheel": self._rpc_mouse_wheel,
-            "keyboard_press": self._rpc_keyboard_press,
-            "keyboard_type": self._rpc_keyboard_type,
             # cdp
             "cdp_send": self._rpc_cdp_send,
             "cdp_close": self._rpc_cdp_close,
         }
         handler = handlers.get(method)
-        if not handler:
-            raise ValueError(f"unknown method: {method}")
-        return await handler(params)
+        if handler:
+            return await handler(params)
+        if method == "commands":
+            return {"commands": commands.describe(params.get("command"))}
+        if commands.exists(method):
+            args = {k: v for k, v in params.items() if k not in ("name", "_positional")}
+            s = await self.pool.get(params["name"], launch=True)
+            return await commands.call(s, method, args, params.get("_positional", ()))
+        raise ValueError(f"unknown method: {method}")
 
     async def _rpc_ping(self, params):
         return {"pong": True, "uptime": time.time() - self._started_at}
@@ -389,34 +362,11 @@ class HutchDaemon:
             page = await s.new_page()
         return s, page
 
-    async def _rpc_goto(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.goto(params["url"],
-                            wait_until=params.get("wait_until", "load"))
-
     async def _rpc_click(self, params):
         s = await self.pool.get(params["name"], launch=True)
         return await s.click(params["selector"],
                              wait_after=params.get("wait_after", "networkidle"),
                              timeout=params.get("timeout", 5000))
-
-    async def _rpc_fill(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.fill(params["selector"], params["value"],
-                            press_enter=params.get("press_enter", False))
-
-    async def _rpc_type(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.type_text(params["selector"], params["text"],
-                                 delay=params.get("delay", 50))
-
-    async def _rpc_press(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.press(params["selector"], params["key"])
-
-    async def _rpc_select_option(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.select_option(params["selector"], params["value"])
 
     async def _rpc_wait_for(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -425,10 +375,6 @@ class HutchDaemon:
             state=params.get("state", "visible"),
             url=params.get("url"),
             timeout=params.get("timeout", 30000))
-
-    async def _rpc_cookies(self, params):
-        s = await self.pool.get(params["name"])
-        return await s.cookies(urls=params.get("urls"))
 
     async def _rpc_set_cookie(self, params):
         s = await self.pool.get(params["name"])
@@ -443,10 +389,6 @@ class HutchDaemon:
         s = await self.pool.get(params["name"])
         await s.delete_cookies()
         return {"cleared": True}
-
-    async def _rpc_storage(self, params):
-        s = await self.pool.get(params["name"])
-        return await s.storage()
 
     async def _rpc_set_storage(self, params):
         s = await self.pool.get(params["name"])
@@ -483,10 +425,6 @@ class HutchDaemon:
         s = await self.pool.get(params["name"])
         await s.clear_intercepts()
         return {"cleared": True}
-
-    async def _rpc_observe(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.observe()
 
     async def _rpc_evaluate(self, params):
         _, page = await self._get_page(params["name"])
@@ -647,23 +585,7 @@ class HutchDaemon:
 
     # --- navigation ---
 
-    async def _rpc_go_back(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.go_back(wait_until=params.get("wait_until", "load"))
-
-    async def _rpc_go_forward(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.go_forward(wait_until=params.get("wait_until", "load"))
-
-    async def _rpc_reload(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.reload(wait_until=params.get("wait_until", "load"))
-
     # --- interaction ---
-
-    async def _rpc_hover(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.hover(params["selector"])
 
     async def _rpc_dblclick(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -676,40 +598,12 @@ class HutchDaemon:
         await s.focus(params["selector"])
         return {"focused": params["selector"]}
 
-    async def _rpc_check(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.check(params["selector"])
-
-    async def _rpc_uncheck(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.uncheck(params["selector"])
-
-    async def _rpc_set_checked(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.set_checked(params["selector"], params["checked"])
-
-    async def _rpc_set_input_files(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.set_input_files(params["selector"], params["files"])
-
-    async def _rpc_drag_and_drop(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.drag_and_drop(params["source"], params["target"])
-
-    async def _rpc_right_click(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.right_click(params["selector"])
-
     async def _rpc_scroll(self, params):
         s = await self.pool.get(params["name"], launch=True)
         return await s.scroll(
             direction=params.get("direction", "down"),
             amount=params.get("amount", 500),
             selector=params.get("selector"))
-
-    async def _rpc_tap(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.tap(params["selector"])
 
     async def _rpc_dispatch_event(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -766,10 +660,6 @@ class HutchDaemon:
         return {"editable": await s.is_editable(params["selector"])}
 
     # --- frames ---
-
-    async def _rpc_frames(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.frames()
 
     async def _rpc_frame_evaluate(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -833,39 +723,7 @@ class HutchDaemon:
 
     # --- advanced waits ---
 
-    async def _rpc_wait_for_function(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.wait_for_function(params["expression"],
-                                         timeout=params.get("timeout", 30000))
-
-    async def _rpc_wait_for_load_state(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.wait_for_load_state(params.get("state", "load"),
-                                           timeout=params.get("timeout", 30000))
-
-    async def _rpc_wait_for_response(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.wait_for_response(params["url_glob"],
-                                         timeout=params.get("timeout", 30000))
-
-    async def _rpc_wait_for_request(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.wait_for_request(params["url_glob"],
-                                        timeout=params.get("timeout", 30000))
-
     # --- tabs/pages ---
-
-    async def _rpc_pages(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.pages()
-
-    async def _rpc_switch_page(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.switch_page(params["index"])
-
-    async def _rpc_close_page(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.close_page(params.get("index"))
 
     async def _rpc_expect_popup(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -894,24 +752,7 @@ class HutchDaemon:
             return {"events": await s.events.wait(since, types, float(params["wait"]))}
         return {"events": s.events.since(since, types)}
 
-    async def _rpc_arm_dialog(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return s.arm_dialog(params.get("accept", True), params.get("text"))
-
-    async def _rpc_set_files(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.set_files(params["files"])
-
     # --- page manipulation ---
-
-    async def _rpc_set_content(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.set_content(params["html"],
-                                   wait_until=params.get("wait_until", "load"))
-
-    async def _rpc_set_viewport_size(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.set_viewport_size(params["width"], params["height"])
 
     async def _rpc_emulate_media(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -1043,15 +884,6 @@ class HutchDaemon:
         s = await self.pool.get(params["name"], launch=True)
         await s.mouse_wheel(params.get("delta_x", 0), params.get("delta_y", 0))
         return {"scrolled": True}
-
-    async def _rpc_keyboard_press(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.keyboard_press(params["key"])
-
-    async def _rpc_keyboard_type(self, params):
-        s = await self.pool.get(params["name"], launch=True)
-        return await s.keyboard_type(params["text"],
-                                     delay=params.get("delay", 0))
 
     # --- cdp ---
 
