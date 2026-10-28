@@ -55,6 +55,9 @@ class _App(http.server.BaseHTTPRequestHandler):
         if path == "/api/orders/1":
             return self._send(200, {"id": 1, "owner": "alice", "card": "4111 **** 1111", "total": 99,
                                     "ts": int(time.time() * 1000)})
+        if path == "/api/token":
+            return self._send(200, {"owner": "alice", "secret": "k-17", "csrf": os.urandom(8).hex(),
+                                    "rid": os.urandom(6).hex()})
         if path == "/soft":
             if user == "alice":
                 return self._send(200, b"<h1>Invoices</h1><p>alice invoice 42</p>", "text/html")
@@ -123,6 +126,11 @@ async def test_replay_classifies_each_identity(base, site):
         me = await pool.authz("alice", ["bob"], {"method": "GET", "url": f"{site}/api/me"})
         bob = me["results"][0]
         assert bob["status"] == 200 and '"bob"' in bob["excerpt"] and bob["verdict"] == "check"
+
+        tok = {"method": "GET", "url": f"{site}/api/token"}
+        assert (await pool.authz("alice", ["bob"], tok, anonymous=False))["results"][0]["verdict"] == "check"
+        (await pool.get("alice")).set_noise(keys=["rid"])
+        assert (await pool.authz("alice", ["bob"], tok, anonymous=False))["results"][0]["verdict"] == "bypassed"
 
         soft = await pool.authz("alice", ["bob"], {"method": "GET", "url": f"{site}/soft"})
         assert soft["results"][0]["status"] == 200 and soft["results"][0]["verdict"] == "enforced"

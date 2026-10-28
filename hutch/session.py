@@ -240,6 +240,7 @@ class Session:
         # with a proxy: nothing of chromium's own on it, loopback through it, never start without it
         self.strict_proxy = strict_proxy
         self.require_proxy = require_proxy
+        self.noise = None
         # persona = explicit fingerprint; otherwise the real browser identity is used untouched
         self.persona = fingerprint is not None
         self.fingerprint = fingerprint or Fingerprint()
@@ -339,6 +340,7 @@ class Session:
             "auth": self.auth,
             "strict_proxy": self.strict_proxy,
             "require_proxy": self.require_proxy,
+            "noise": self.noise,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -395,8 +397,8 @@ class Session:
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
-        if meta.get("auth"):
-            s.auth = meta["auth"]
+        if meta.get("auth") or meta.get("noise"):
+            s.auth, s.noise = meta.get("auth"), meta.get("noise")
             s._save_meta()
         return s
 
@@ -1260,6 +1262,13 @@ class Session:
         self._save_meta()
         self.events.emit("auth", state=state, reason=reason)
         return self.auth["last"]
+
+    def set_noise(self, *, headers=(), keys=(), patterns=()):
+        """Extra things that change without meaning anything on this target (header names, body/query
+        keys, regexes), on top of hutch.noise defaults; used by authz and response diffs."""
+        self.noise = {"headers": list(headers), "keys": list(keys), "patterns": list(patterns)}
+        self._save_meta()
+        return self.noise
 
     async def find_probe(self, *, tries=8, save=True):
         """Pick a login probe from captured traffic: a GET that answers this session and refuses

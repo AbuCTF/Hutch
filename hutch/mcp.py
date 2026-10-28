@@ -558,6 +558,9 @@ def create_mcp_server():
                         "host": {"type": "string", "description": "Limit scan to this host"},
                         "anonymous": {"type": "boolean", "default": True},
                         "unsafe": {"type": "boolean", "default": False},
+                        "noise": {"type": "object", "description": "Extra things to ignore when comparing: "
+                                  "{headers: [], keys: [], patterns: []}; defaults already cover CSRF, "
+                                  "trace ids, timestamps, cursors, Cloudflare/NetScaler/WEBDEV tokens"},
                     },
                     "required": ["owner"],
                 },
@@ -1132,7 +1135,8 @@ def create_mcp_server():
             from hutch import authz
             pool = await _get_pool()
             owner, others = arguments["owner"], arguments.get("as") or []
-            opts = {"anonymous": arguments.get("anonymous", True), "unsafe": arguments.get("unsafe", False)}
+            opts = {"anonymous": arguments.get("anonymous", True), "unsafe": arguments.get("unsafe", False),
+                    "noise": arguments.get("noise")}
             if arguments.get("action") == "scan":
                 reports = await pool.authz_scan(owner, others, since=arguments.get("since", 0),
                                                 host=arguments.get("host"), **opts)

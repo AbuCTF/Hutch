@@ -118,9 +118,14 @@
 - [x] soft denials (200 with a login form or session-expired wording) count as enforced
 - [x] TelOS branch `hutch-identities`: login health card, probes, two-step TOTP login, authz capability
 
+### v0.23.0 — done
+
+- [x] noise normalizer (`hutch/noise.py`) shared by authz and differ: header names, body / query keys
+      (JSON anywhere, form fields, meta tags, url params), value patterns; defaults from BBP's live
+      targets; per session (`set_noise`), per call, or `HUTCH_NOISE` file; size disparity on raw sizes
+
 ### Next
 
-- [ ] noise normalizer shared by differ and authz (header / JSON key / regex rules, BBP's list as defaults)
 - [ ] push subscription over JSON-RPC; health alerts + content changes in the same event stream
 - [ ] authz evidence mode (full request and both responses) for reports
 - [ ] roles beyond A/B in TelOS (`pid:<role>`), OAuth IdP hop allow-then-revert in the TelOS gate

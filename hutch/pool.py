@@ -251,12 +251,13 @@ class Pool:
         entries_b = sb.context.network.all()
         return diff_responses(
             entries_a, entries_b, name_a, name_b,
-            url_pattern=url_pattern, ignore_noise=ignore_noise)
+            url_pattern=url_pattern, ignore_noise=ignore_noise, noise=sa.noise)
 
-    async def authz(self, owner, identities, request, *, anonymous=True, unsafe=False):
+    async def authz(self, owner, identities, request, *, anonymous=True, unsafe=False, noise=None):
         """Replay owner's request as each identity and as nobody; see hutch.authz.replay."""
         from . import authz
-        return await authz.replay(self, owner, identities, request, anonymous=anonymous, unsafe=unsafe)
+        return await authz.replay(self, owner, identities, request, anonymous=anonymous, unsafe=unsafe,
+                                  noise=noise)
 
     async def authz_scan(self, owner, identities, **kw):
         from . import authz

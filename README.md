@@ -116,6 +116,10 @@ hutch authz acme-alice acme-bob --caido 5123        # any request from caido his
 - each identity sends its own cookies and the auth headers it last used on that host, through the
   session's proxy so every replay lands in caido; only GET/HEAD/OPTIONS unless `--unsafe`
 - agents: `hutch_authz` replays one request or scans everything the owner captured
+- answers are compared after stripping what changes without meaning anything: CSRF fields, trace
+  and request ids, timestamps, cursors, cache busters, Cloudflare / NetScaler / WEBDEV / Kiteworks
+  tokens (`hutch/noise.py`). Add per target with `hutch call <name> set_noise keys:='["rid"]'`,
+  per call with `noise`, or for everything in the file named by `HUTCH_NOISE`
 
 ```bash
 hutch auth acme-alice --probe https://api.acme.com/me --login alice-login.json

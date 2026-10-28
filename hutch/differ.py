@@ -35,24 +35,18 @@ _AUTHZ_INDICATORS = re.compile(
 
 
 def diff_responses(entries_a, entries_b, session_a, session_b, *,
-                   url_pattern=None, ignore_noise=True):
-    by_url_a = {}
-    for e in entries_a:
-        if url_pattern and url_pattern not in _get_url(e):
-            continue
-        url = _get_url(e)
-        method = _get_method(e)
-        key = f"{method} {url}"
-        by_url_a[key] = e
+                   url_pattern=None, ignore_noise=True, noise=None):
+    from .noise import DEFAULT, Noise
+    n = DEFAULT.merged(noise) if ignore_noise else Noise(defaults=False)
 
-    by_url_b = {}
-    for e in entries_b:
-        if url_pattern and url_pattern not in _get_url(e):
-            continue
-        url = _get_url(e)
-        method = _get_method(e)
-        key = f"{method} {url}"
-        by_url_b[key] = e
+    def index(entries):
+        out = {}
+        for e in entries:
+            if url_pattern and url_pattern not in _get_url(e):
+                continue
+            out[f"{_get_method(e)} {n.url(_get_url(e))}"] = e
+        return out
+    by_url_a, by_url_b = index(entries_a), index(entries_b)
 
     diffs = []
     for key in set(by_url_a) | set(by_url_b):
@@ -65,24 +59,20 @@ def diff_responses(entries_a, entries_b, session_a, session_b, *,
         status_b = _get_status(b)
         status_match = status_a == status_b
 
-        hdiffs = []
-        if not ignore_noise:
-            hdiffs = _diff_headers(
-                _get_resp_headers(a), _get_resp_headers(b))
-        else:
-            hdiffs = _diff_headers(
-                _get_resp_headers(a), _get_resp_headers(b),
-                ignore=_NOISE_HEADERS)
+        hdiffs = _diff_headers(n.headers(_get_resp_headers(a)), n.headers(_get_resp_headers(b)),
+                               ignore=_NOISE_HEADERS if ignore_noise else None)
 
         body_a = _get_body(a)
         body_b = _get_body(b)
-        body_match = body_a == body_b
+        norm_a = n.body(body_a) if body_a is not None else None
+        norm_b = n.body(body_b) if body_b is not None else None
+        body_match = norm_a == norm_b
 
         body_diff = None
         if not body_match and body_a and body_b:
             if len(body_a) < 50000 and len(body_b) < 50000:
                 body_diff = "\n".join(difflib.unified_diff(
-                    body_a.splitlines(), body_b.splitlines(),
+                    norm_a.splitlines(), norm_b.splitlines(),
                     fromfile=session_a, tofile=session_b, lineterm=""))
 
         rd = ResponseDiff(
@@ -120,13 +110,14 @@ def _check_interesting(rd, body_a, body_b):
             notes.append(f"status_diff: {rd.status_a} vs {rd.status_b}")
             rd.interesting = True
 
-    if rd.body_match is False and body_a is not None and body_b is not None:
-        if rd.size_a > 0 and rd.size_b > 0:
-            ratio = min(rd.size_a, rd.size_b) / max(rd.size_a, rd.size_b)
-            if ratio < 0.5:
-                notes.append(f"size_disparity: {rd.size_a}B vs {rd.size_b}B")
-                rd.interesting = True
+    if body_a is not None and body_b is not None and rd.size_a > 0 and rd.size_b > 0:
+        # raw sizes: normalizing can make a short and a long body look alike
+        ratio = min(rd.size_a, rd.size_b) / max(rd.size_a, rd.size_b)
+        if ratio < 0.5:
+            notes.append(f"size_disparity: {rd.size_a}B vs {rd.size_b}B")
+            rd.interesting = True
 
+    if rd.body_match is False and body_a is not None and body_b is not None:
         if body_a and _AUTHZ_INDICATORS.search(body_a) and body_b and not _AUTHZ_INDICATORS.search(body_b):
             notes.append("authz_asymmetry: only session_a contains access-denied language")
             rd.interesting = True

@@ -6,6 +6,7 @@ import re
 from urllib.parse import urlparse
 
 from .differ import _AUTHZ_INDICATORS
+from .noise import DEFAULT
 
 SAFE = ("GET", "HEAD", "OPTIONS")
 _AUTH_HEADER = re.compile(r"auth|token|csrf|xsrf|session|api[-_]?key|^cookie$", re.I)
@@ -15,8 +16,6 @@ _SOFT_DENIAL = re.compile(r"<input[^>]+type=[\"']?password|session (?:has )?(?:e
                           r"|you must (?:log|sign) ?in|not authori[sz]ed|login required|access denied|"
                           r"\b(?:unauthenticated|unauthorized)\b", re.I)
 _STATIC = re.compile(r"\.(?:js|mjs|css|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|map|mp4|webm)(?:\?|$)", re.I)
-_NOISE = re.compile(r"\d{4}-\d\d-\d\dT[\d:.]+Z?|\b\d{10,13}\b|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-                    r"|\b[0-9a-f]{32,}\b|\b[A-Za-z0-9_-]{40,}\b", re.I)
 
 
 def parse_raw(raw, scheme="https"):
@@ -74,8 +73,8 @@ async def _send(playwright, session, request, *, timeout=20000):
         await ctx.dispose()
 
 
-def _similarity(a, b):
-    a, b = _NOISE.sub("", a[:30000]), _NOISE.sub("", b[:30000])
+def _similarity(a, b, noise=DEFAULT):
+    a, b = noise.body(a[:30000]), noise.body(b[:30000])
     if a == b:
         return 1.0
     return round(difflib.SequenceMatcher(None, a, b, autojunk=False).ratio(), 3)
@@ -99,7 +98,7 @@ def _verdict(base, other):
     return "check"
 
 
-async def replay(pool, owner, identities, request, *, anonymous=True, unsafe=False):
+async def replay(pool, owner, identities, request, *, anonymous=True, unsafe=False, noise=None):
     """Run request as owner (baseline), each identity, and nobody; classify each against the baseline.
 
     bypassed: same answer as the owner, so the resource is not protected from that identity.
@@ -112,12 +111,13 @@ async def replay(pool, owner, identities, request, *, anonymous=True, unsafe=Fal
     owner_s = await pool.get(owner, launch=True)
     others = [await pool.get(n, launch=True) for n in identities]
     request = {**request, "_proxy": owner_s.proxy}
+    rules = DEFAULT.merged(owner_s.noise).merged(noise)
     base = await _send(pool._playwright, owner_s, request)
     results = []
     targets = [(s.name, s) for s in others] + ([("anonymous", None)] if anonymous else [])
     for name, s in targets:
         r = await _send(pool._playwright, s, request)
-        r["similarity"] = _similarity(base["body"], r["body"])
+        r["similarity"] = _similarity(base["body"], r["body"], rules)
         r["verdict"] = _verdict(base, r)
         r["as"] = name
         results.append(r)
@@ -135,7 +135,7 @@ async def replay(pool, owner, identities, request, *, anonymous=True, unsafe=Fal
 
 
 async def scan(pool, owner, identities, *, since=0, host=None, anonymous=True, unsafe=False,
-               limit=40, concurrency=3):
+               limit=40, concurrency=3, noise=None):
     """Replay the owner's captured API and page requests (safe methods unless unsafe)."""
     owner_s = await pool.get(owner, launch=True)
     if not owner_s.context:
@@ -161,7 +161,8 @@ async def scan(pool, owner, identities, *, since=0, host=None, anonymous=True, u
 
     async def one(req):
         async with gate:
-            return await replay(pool, owner, identities, req, anonymous=anonymous, unsafe=unsafe)
+            return await replay(pool, owner, identities, req, anonymous=anonymous, unsafe=unsafe,
+                                noise=noise)
     reports = await asyncio.gather(*(one(r) for r in todo))
     order = {"bypassed": 0, "check": 1, "enforced": 2, "public": 3}
     return sorted(reports, key=lambda r: order[r["verdict"]])
