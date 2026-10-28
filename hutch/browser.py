@@ -285,13 +285,25 @@ def status(user_data_dir):
         "ws": ep[1] if ep else None,
         "headless": state.get("headless") if state.get("pid") == pid else None,
         "browser": state.get("browser"),
+        "proxy": state.get("proxy") if state.get("pid") == pid else None,
         "agent_access": bool(ep),
     }
 
 
+# with a proxy, nothing of chromium's own (updates, sync, hints, reporting) should knock on it
+_STRICT_ARGS = (
+    "--disable-background-networking", "--disable-component-update", "--disable-domain-reliability",
+    "--disable-sync", "--no-pings", "--disable-breakpad",
+    "--disable-features=OptimizationHints,OptimizationGuideModelDownloading,MediaRouter,"
+    "DialMediaRouteProvider,AutofillServerCommunication,CertificateTransparencyComponentUpdater,"
+    "NetworkTimeServiceQuerying,Translate,InterestFeedContentSuggestions,PrivacySandboxSettings4",
+)
+
+
 def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=None,
-               proxy=None, proxy_bypass=None, ignore_https_errors=False, window_size=None,
-               lang=None, user_agent=None, window_class=None, maximize=True, extra=()):
+               proxy=None, proxy_bypass=None, strict_proxy=True, ignore_https_errors=False,
+               window_size=None, lang=None, user_agent=None, window_class=None, maximize=True,
+               extra=()):
     args = [
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
@@ -314,8 +326,12 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
         args.append(f"--window-size={window_size[0]},{window_size[1]}")
     if proxy:
         args.append(f"--proxy-server={proxy}")
-    if proxy_bypass:
-        args.append(f"--proxy-bypass-list={proxy_bypass}")
+        if strict_proxy:
+            # loopback goes through the proxy too, so a page cannot reach local services around it
+            bypass = ";".join(["<-loopback>"] + ([proxy_bypass] if proxy_bypass else []))
+            args += [f"--proxy-bypass-list={bypass}", *_STRICT_ARGS]
+        elif proxy_bypass:
+            args.append(f"--proxy-bypass-list={proxy_bypass}")
     if ignore_https_errors:
         args.append("--ignore-certificate-errors")
     if lang:
@@ -335,6 +351,19 @@ def _pdeathsig():
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)
     except Exception:
         pass
+
+
+def _require_proxy(proxy):
+    """Fail closed: a session that has a proxy never starts while that proxy is unreachable."""
+    from urllib.parse import urlparse
+    u = urlparse(proxy if "://" in proxy else f"http://{proxy}")
+    port = u.port or {"http": 80, "https": 443, "socks5": 1080, "socks4": 1080}.get(u.scheme, 8080)
+    import socket
+    try:
+        with socket.create_connection((u.hostname or "127.0.0.1", port), timeout=3):
+            pass
+    except OSError as exc:
+        raise BrowserError(f"proxy {proxy} is unreachable ({exc.strerror or exc}), not starting without it") from None
 
 
 _JOBS = []
@@ -379,6 +408,8 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
     if running:
         return running
     executable = find_executable(browser)
+    if kw.get("proxy"):
+        _require_proxy(kw["proxy"])
     if not kw.get("user_agent") and headless:
         kw["user_agent"] = real_user_agent(browser_version(executable))
     with contextlib.suppress(FileNotFoundError):
@@ -409,8 +440,8 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
             _kill_with_parent(proc)
     log.close()
     with open(os.path.join(user_data_dir, _STATE_FILE), "w") as f:
-        json.dump({"pid": proc.pid, "headless": headless, "browser": browser,
-                   "executable": executable, "debug": debug, "started": time.time()}, f)
+        json.dump({"pid": proc.pid, "headless": headless, "browser": browser, "executable": executable,
+                   "debug": debug, "proxy": kw.get("proxy"), "started": time.time()}, f)
     if not debug:
         return {"pid": proc.pid, "port": None, "ws": None, "headless": headless,
                 "browser": browser, "agent_access": False, "process": proc}

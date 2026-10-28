@@ -71,6 +71,9 @@ def create_mcp_server():
         if not found:
             return None
         _event_cursor[name] = found[-1]["seq"]
+        found = [e for e in found if e["type"] != "host"]
+        if not found:
+            return None
         return "events:\n" + "\n".join(_event_line(e) for e in found)
 
     async def _page_state(session) -> dict:

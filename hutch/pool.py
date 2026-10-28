@@ -85,7 +85,7 @@ class Pool:
     async def create(self, name, *, proxy=None, fingerprint=None,
                      headless=True, ignore_https_errors=False,
                      launch=True, tags=None, caido=False, launcher=None,
-                     browser="chromium", endpoint=None):
+                     browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -108,6 +108,8 @@ class Pool:
             launcher=launcher,
             browser=browser,
             endpoint=endpoint,
+            strict_proxy=strict_proxy,
+            require_proxy=require_proxy,
         )
 
         if launch:

@@ -55,6 +55,11 @@ class _App(http.server.BaseHTTPRequestHandler):
         if path == "/api/orders/1":
             return self._send(200, {"id": 1, "owner": "alice", "card": "4111 **** 1111", "total": 99,
                                     "ts": int(time.time() * 1000)})
+        if path == "/soft":
+            if user == "alice":
+                return self._send(200, b"<h1>Invoices</h1><p>alice invoice 42</p>", "text/html")
+            return self._send(200, b"<h1>Invoices</h1><p>Your session has expired.</p>"
+                                   b"<form><input type=password name=pw></form>", "text/html")
         if path == "/api/orders/2":
             return self._send(200, {"id": 2, "owner": "bob"}) if user == "bob" else self._send(404, {})
         if path == "/api/admin":
@@ -118,6 +123,9 @@ async def test_replay_classifies_each_identity(base, site):
         me = await pool.authz("alice", ["bob"], {"method": "GET", "url": f"{site}/api/me"})
         bob = me["results"][0]
         assert bob["status"] == 200 and '"bob"' in bob["excerpt"] and bob["verdict"] == "check"
+
+        soft = await pool.authz("alice", ["bob"], {"method": "GET", "url": f"{site}/soft"})
+        assert soft["results"][0]["status"] == 200 and soft["results"][0]["verdict"] == "enforced"
 
         theirs = await pool.authz("bob", ["alice"], {"method": "GET", "url": f"{site}/api/orders/2"})
         assert theirs["verdict"] == "enforced"

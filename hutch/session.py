@@ -233,10 +233,13 @@ class Session:
                  proxy=None, fingerprint=None, headless=True,
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
-                 browser="chromium", endpoint=None):
+                 browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False):
         self.name = name
         self.profile_dir = profile_dir
         self.proxy = proxy
+        # with a proxy: nothing of chromium's own on it, loopback through it, never start without it
+        self.strict_proxy = strict_proxy
+        self.require_proxy = require_proxy
         # persona = explicit fingerprint; otherwise the real browser identity is used untouched
         self.persona = fingerprint is not None
         self.fingerprint = fingerprint or Fingerprint()
@@ -280,6 +283,7 @@ class Session:
         self._recording = None
         self._recorder_installed = False
         self._front = None
+        self._hosts = {}
         self._owner = f"{os.getpid()}-{os.urandom(3).hex()}"
         self._leased = {}
         self._file_chooser = None
@@ -333,6 +337,8 @@ class Session:
             "ignore_https_errors": self.ignore_https_errors,
             "tags": self.tags,
             "auth": self.auth,
+            "strict_proxy": self.strict_proxy,
+            "require_proxy": self.require_proxy,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -384,6 +390,8 @@ class Session:
             launcher=meta.get("launcher", "playwright" if legacy else None),
             browser=meta.get("browser", "chromium"),
             endpoint=meta.get("endpoint"),
+            strict_proxy=meta.get("strict_proxy", True),
+            require_proxy=meta.get("require_proxy", False),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -404,6 +412,8 @@ class Session:
             "--no-default-browser-check",
             "--remote-debugging-port=0",
         ]
+        if self.proxy and self.strict_proxy:
+            chrome_args += list(_browser._STRICT_ARGS)
         if not self.headless:
             chrome_args.append(f"--class={self._window_class()}")
             # Hyprland owns tiled window geometry. Asking Chromium to maximize
@@ -551,7 +561,12 @@ class Session:
         if self._context:
             return self._context
         self._playwright = playwright
+        if self.require_proxy and not self.proxy and not self.endpoint:
+            raise RuntimeError(f"session '{self.name}' requires a proxy and has none")
         running = None if self.endpoint else _browser.status(self.profile_dir)
+        if running and self.proxy and running.get("proxy") != self.proxy.server:
+            raise RuntimeError(f"session '{self.name}' is open without its proxy {self.proxy.server} "
+                               f"(running with {running.get('proxy') or 'none'}); stop it first")
         if self.endpoint:
             ws = await asyncio.to_thread(_browser.resolve_endpoint, self.endpoint)
             await self._connect(playwright, {"ws": ws}, owned=False)
@@ -591,6 +606,8 @@ class Session:
 
     async def _launch_playwright(self, playwright):
         kwargs = self._launch_args()
+        if self.proxy:
+            await asyncio.to_thread(_browser._require_proxy, self.proxy.server)
         if self.persona:
             _match_engine(self.fingerprint, await asyncio.to_thread(
                 _browser.browser_version, playwright.chromium.executable_path))
@@ -618,6 +635,7 @@ class Session:
         if self.proxy:
             kw["proxy"] = self.proxy.server
             kw["proxy_bypass"] = self.proxy.bypass
+            kw["strict_proxy"] = self.strict_proxy
         extra, env = [], {}
         if fp.disable_webrtc:
             extra.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
@@ -762,6 +780,7 @@ class Session:
         page.on("popup", lambda popup, opener=page: self._follow_popup(opener, popup))
         page.on("crash", lambda p: self.events.emit("crash", tab=self._tab(p), url=p.url))
         page.on("framenavigated", self._on_navigated)
+        page.on("request", self._saw_host)
         page.on("close", lambda p: self._on_page_closed(p))
         page.on("domcontentloaded", lambda p: self._remark(p))
         if self.headless:
@@ -1035,6 +1054,17 @@ class Session:
         self.events.emit("popup", tab=self._tab(popup), opener=self._tab(opener),
                          url=popup.url, agent=self._is_agent_page(popup))
 
+    def _saw_host(self, request):
+        from urllib.parse import urlparse
+        host = urlparse(request.url).hostname
+        if host and host not in self._hosts:
+            self._hosts[host] = time.time()
+            self.events.emit("host", host=host, url=request.url[:200])
+
+    def hosts(self):
+        """Every host this session's tabs contacted, first seen first (a gate checks containment)."""
+        return [{"host": h, "first_seen": t} for h, t in sorted(self._hosts.items(), key=lambda kv: kv[1])]
+
     def _claim(self, page):
         """Mark a tab as the agent's: its dialogs are answered and file choosers intercepted."""
         if page in self._agent_pages:
@@ -1157,7 +1187,7 @@ class Session:
         """Run a recording (dict or path) on the active tab; {{name}} values come from the vault."""
         rec = _recorder.load(recording)
         page = self._require_page()
-        done = 0
+        done, before = 0, set(self._hosts)
         try:
             if rec.get("start") and page.url != rec["start"]:
                 await page.goto(rec["start"])
@@ -1168,8 +1198,9 @@ class Session:
         except Exception as exc:
             message = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
             return {"ok": False, "done": done, "failed": rec["steps"][done] if done < len(rec["steps"]) else None,
-                    "error": message}
-        return {"ok": True, "done": done, "url": self._require_page().url}
+                    "error": message, "hosts": sorted(set(self._hosts) - before)}
+        return {"ok": True, "done": done, "url": self._require_page().url,
+                "hosts": sorted(set(self._hosts) - before)}
 
     async def _replay_step(self, page, step, timeout):
         a, sel = step["action"], step.get("selector")

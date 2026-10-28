@@ -108,9 +108,24 @@
 - [x] login health: `set_auth` probe / expect / login recording, `auth_check` from one request,
       `keep_alive` relogs in a spare tab, `auth` events, `hutch auth`
 
+### v0.21.0 – v0.22.0 — done
+
+- [x] `find_probe`: login probe inferred from captured traffic (200 with the session, refused without)
+- [x] strict proxy by default with a proxy: `<-loopback>`, background networking / component update /
+      pings / sync / network time off; fail closed on an unreachable proxy; `require_proxy`; refuse to
+      attach to a browser running without the session's proxy; namespace leak test (no DNS, no direct)
+- [x] hosts touched per session (`hosts()`, `host` events), and per replay / relogin
+- [x] soft denials (200 with a login form or session-expired wording) count as enforced
+- [x] TelOS branch `hutch-identities`: login health card, probes, two-step TOTP login, authz capability
+
 ### Next
 
-- [ ] TelOS: identities health on the dashboard, `hutch_authz` as a capability, TOTP via the vault
+- [ ] noise normalizer shared by differ and authz (header / JSON key / regex rules, BBP's list as defaults)
+- [ ] push subscription over JSON-RPC; health alerts + content changes in the same event stream
+- [ ] authz evidence mode (full request and both responses) for reports
+- [ ] roles beyond A/B in TelOS (`pid:<role>`), OAuth IdP hop allow-then-revert in the TelOS gate
+- [ ] chromium's component updater still calls update.googleapis.com / redirector.gvt1.com /
+      www.google.com through the proxy despite the flags (contained: the proxy can refuse them)
 
 
 ---

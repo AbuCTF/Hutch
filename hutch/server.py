@@ -351,6 +351,8 @@ class HutchDaemon:
             tags=params.get("tags", {}),
             caido=params.get("caido", False),
             browser=params.get("browser", "chromium"),
+            strict_proxy=params.get("strict_proxy", True),
+            require_proxy=params.get("require_proxy", False),
         )
         self._get_health(name)
         return _session_info(s)

@@ -66,6 +66,12 @@ hutch gc --dry-run --caches            # what old artifacts, downloads and cache
   over it; in a visible browser those tabs carry a small "agent" badge (not in snapshots or screenshots)
 - `--browser chrome|brave|edge|/path` per profile; a profile stays on the browser it was made with
 - `HUTCH_BASE_DIR` switches the profile root
+- with a proxy, nothing leaves except through it: measured in an empty network namespace (no DNS
+  lookups, no direct connections, WebSocket and WebRTC included). Loopback goes through the proxy too,
+  so a page cannot reach local services around it, and chromium's own background calls are switched
+  off (`strict_proxy=False` restores chrome's defaults). A proxy that is down stops the launch instead
+  of falling back to direct, `require_proxy` refuses a session without one, and a browser already
+  running without the session's proxy is not attached to. `session.hosts()` lists every host contacted
 - captured response bodies are capped at 64 MB per session (`HUTCH_CAPTURE_MB`; the oldest bodies go
   first, request metadata stays), artifacts keep the newest 200 per kind (`HUTCH_ARTIFACTS_KEEP`) and
   chromium's disk cache is capped at 256 MB per profile (`HUTCH_DISK_CACHE_MB`)
@@ -104,7 +110,8 @@ hutch authz acme-alice acme-bob --caido 5123        # any request from caido his
 ```
 
 - `bypassed`: another account got the owner's answer, likely IDOR / broken access control
-- `enforced`: denied, redirected away or not found; `public`: logged out gets it too
+- `enforced`: denied, redirected away, not found, or a 200 that is really a login page or a
+  "session expired" / "not authorized" body; `public`: logged out gets it too
 - `check`: answered differently, only a human can judge (often per-user data on a shared endpoint)
 - each identity sends its own cookies and the auth headers it last used on that host, through the
   session's proxy so every replay lands in caido; only GET/HEAD/OPTIONS unless `--unsafe`

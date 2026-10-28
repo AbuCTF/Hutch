@@ -10,6 +10,10 @@ from .differ import _AUTHZ_INDICATORS
 SAFE = ("GET", "HEAD", "OPTIONS")
 _AUTH_HEADER = re.compile(r"auth|token|csrf|xsrf|session|api[-_]?key|^cookie$", re.I)
 _DROP = {"host", "content-length", "connection", "accept-encoding", "cookie"}
+# a refusal dressed as 200: a login form or denial wording the owner's answer does not have
+_SOFT_DENIAL = re.compile(r"<input[^>]+type=[\"']?password|session (?:has )?(?:expired|timed out)|please (?:log|sign) ?in"
+                          r"|you must (?:log|sign) ?in|not authori[sz]ed|login required|access denied|"
+                          r"\b(?:unauthenticated|unauthorized)\b", re.I)
 _STATIC = re.compile(r"\.(?:js|mjs|css|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|map|mp4|webm)(?:\?|$)", re.I)
 _NOISE = re.compile(r"\d{4}-\d\d-\d\dT[\d:.]+Z?|\b\d{10,13}\b|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
                     r"|\b[0-9a-f]{32,}\b|\b[A-Za-z0-9_-]{40,}\b", re.I)
@@ -85,8 +89,9 @@ def _verdict(base, other):
         return "enforced"
     if 300 <= s < 400 and not 300 <= base["status"] < 400:
         return "enforced"
-    if _AUTHZ_INDICATORS.search(other["body"][:5000]) and not _AUTHZ_INDICATORS.search(base["body"][:5000]):
-        return "enforced"
+    for signal in (_AUTHZ_INDICATORS, _SOFT_DENIAL):
+        if signal.search(other["body"][:20000]) and not signal.search(base["body"][:20000]):
+            return "enforced"
     if s != base["status"]:
         return "check"
     if other["similarity"] >= 0.95 and base["length"] > 0:
