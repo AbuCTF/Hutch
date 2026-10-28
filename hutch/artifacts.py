@@ -18,8 +18,19 @@ class ArtifactMeta:
 
 class ArtifactStore:
 
-    def __init__(self, base_dir=None):
+    def __init__(self, base_dir=None, keep=None):
         self.base_dir = base_dir or _DEFAULT_ARTIFACTS_DIR
+        self.keep = keep or int(os.environ.get("HUTCH_ARTIFACTS_KEEP", 200))
+
+    def _prune(self, d):
+        """Keep the newest files of one kind per session."""
+        files = [os.path.join(d, f) for f in os.listdir(d)]
+        files = sorted((f for f in files if os.path.isfile(f)), key=os.path.getmtime)
+        for old in files[:-self.keep]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
 
     def _session_dir(self, session_name, subdir=None):
         parts = [self.base_dir, session_name]
@@ -42,6 +53,7 @@ class ArtifactStore:
         path = os.path.join(d, f"{ts}{suffix}.har")
         with open(path, "w") as f:
             json.dump(har_data, f, indent=2)
+        self._prune(d)
         return ArtifactMeta(
             session=session_name, type="har", path=path, timestamp=ts,
         )
@@ -53,6 +65,7 @@ class ArtifactStore:
         path = os.path.join(d, f"{ts}{suffix}.png")
         with open(path, "wb") as f:
             f.write(png_bytes)
+        self._prune(d)
         return ArtifactMeta(
             session=session_name, type="screenshot", path=path, timestamp=ts,
         )
@@ -64,6 +77,7 @@ class ArtifactStore:
         path = os.path.join(d, f"{ts}{suffix}.json")
         with open(path, "w") as f:
             json.dump(snapshot_data, f, indent=2, default=_serialize)
+        self._prune(d)
         return ArtifactMeta(
             session=session_name, type="snapshot", path=path, timestamp=ts,
         )

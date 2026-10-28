@@ -42,6 +42,7 @@ hutch headed bb-acme                   # back on screen
 hutch ps                               # running browsers and their memory
 hutch stop bb-acme                     # or just close the window
 hutch doctor                           # libraries, fonts, display, attachable browsers
+hutch gc --dry-run --caches            # what old artifacts, downloads and caches would free
 ```
 
 - closing the window ends the process; nothing keeps running and the profile stays in `~/.hutch/profiles/<name>`
@@ -50,6 +51,9 @@ hutch doctor                           # libraries, fonts, display, attachable b
 - an agent that starts a stopped profile starts it headless; `view` shows what it is doing
 - `--browser chrome|brave|edge|/path` per profile; a profile stays on the browser it was made with
 - `HUTCH_BASE_DIR` switches the profile root
+- captured response bodies are capped at 64 MB per session (`HUTCH_CAPTURE_MB`; the oldest bodies go
+  first, request metadata stays), artifacts keep the newest 200 per kind (`HUTCH_ARTIFACTS_KEEP`) and
+  chromium's disk cache is capped at 256 MB per profile (`HUTCH_DISK_CACHE_MB`)
 
 #### Agents
 

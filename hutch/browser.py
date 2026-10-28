@@ -13,6 +13,7 @@ import urllib.request
 
 _STATE_FILE = "hutch_browser.json"
 _LOG_FILE = "hutch_browser.log"
+_DISK_CACHE = int(float(os.environ.get("HUTCH_DISK_CACHE_MB", 256)) * 1048576)
 _PORT_FILE = "DevToolsActivePort"
 
 # same values the playwright launcher uses, so a profile decrypts its cookies under both
@@ -253,6 +254,7 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        f"--disk-cache-size={_DISK_CACHE}",
         *_COMPAT_ARGS,
     ]
     if debug:

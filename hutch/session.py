@@ -97,6 +97,7 @@ _SENTINEL = object()
 
 _WS_FRAME_CAP = 200    # max frames stored per WebSocket connection
 _WS_PAYLOAD_MAX = 4096  # truncation limit for individual frame payloads
+_WS_CONN_CAP = 100    # connections kept; reconnecting SPAs open many
 
 
 _REF_RE = re.compile(r"^(?:f\d+)?e\d+$")
@@ -270,7 +271,7 @@ class Session:
         self._cdp_session = None
         self._watchdog_task = None
         self._last_url = None
-        self._websockets = []
+        self._websockets = deque(maxlen=_WS_CONN_CAP)
         self._owned = False
         self._closing = False
         self._pid = None
@@ -2355,7 +2356,7 @@ class Session:
             self._pages = []
             self._popup_pages = []
             self._downloads = {}
-            self._websockets = []
+            self._websockets = deque(maxlen=_WS_CONN_CAP)
             self._file_chooser = None
             self._browser_cdp = None
             self._agent_pages = weakref.WeakSet()

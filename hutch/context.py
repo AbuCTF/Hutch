@@ -1,4 +1,5 @@
 import fnmatch
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -78,6 +79,9 @@ _INTERNAL_SCHEMES = ("chrome://", "chrome-untrusted://", "chrome-extension://",
 
 _BODY_MAX = 65536
 _BODY_MAX_RESPONSE = 1_048_576  # 1 MB default for response body capture
+_BODY_BUDGET = int(float(os.environ.get("HUTCH_CAPTURE_MB", 64)) * 1_048_576)
+_CONSOLE_MAX = 16384
+_PENDING_MAX = 2000
 
 _TEXT_CONTENT_TYPES = frozenset({
     "application/json",
@@ -109,6 +113,10 @@ def _should_capture_body(content_type):
     if ct.endswith(("+json", "+xml")):
         return True
     return False
+
+
+def _body_size(entry):
+    return len(entry.request_body or "") + len(entry.response_body or "")
 
 
 class RingBuffer:
@@ -158,7 +166,7 @@ class RingBuffer:
 class Context:
 
     def __init__(self, network_cap=1000, console_cap=500,
-                 max_body_size=_BODY_MAX_RESPONSE):
+                 max_body_size=_BODY_MAX_RESPONSE, body_budget=_BODY_BUDGET):
         self.network = RingBuffer(network_cap)
         self.console = RingBuffer(console_cap)
         self.errors = RingBuffer(console_cap)
@@ -169,6 +177,8 @@ class Context:
         self._last_cookies = []
         self._subscribers = []
         self._max_body_size = max_body_size
+        self._body_budget = body_budget
+        self._body_bytes = 0
 
     def _next_seq(self):
         self._seq += 1
@@ -209,6 +219,8 @@ class Context:
             resource_type=request.resource_type,
             timestamp=time.time(),
         )
+        if len(self._pending) >= _PENDING_MAX:
+            self._pending.pop(next(iter(self._pending)))
         self._pending[request] = entry
 
     async def _on_response(self, response):
@@ -247,8 +259,30 @@ class Context:
                     # streaming responses, or if the page navigated away
                     pass
 
-        self.network.append(entry)
+        self._add_network(entry)
         self._emit("network", entry)
+
+    @property
+    def body_bytes(self):
+        return self._body_bytes
+
+    def _add_network(self, entry):
+        """Append within the byte budget: the oldest bodies go first, their metadata stays."""
+        buf = self.network._buf
+        if buf.maxlen and len(buf) == buf.maxlen:
+            self._body_bytes -= _body_size(buf[0])
+        self.network.append(entry)
+        self._body_bytes += _body_size(entry)
+        if self._body_bytes <= self._body_budget:
+            return
+        target = self._body_budget * 0.8
+        for old in buf:
+            if self._body_bytes <= target or old is entry:
+                break
+            size = _body_size(old)
+            if size:
+                old.request_body = old.response_body = None
+                self._body_bytes -= size
 
     def _on_request_failed(self, request):
         entry = self._pending.pop(request, None)
@@ -257,7 +291,7 @@ class Context:
             entry.status = 0
             entry.timing = (time.time() - entry.timestamp) * 1000
             entry.response_headers = {"x-failure": failure or "unknown"}
-            self.network.append(entry)
+            self._add_network(entry)
             self._emit("network", entry)
 
     def _on_console(self, msg):
@@ -265,7 +299,7 @@ class Context:
         entry = ConsoleEntry(
             seq=self._next_seq(),
             level=msg.type,
-            text=msg.text,
+            text=msg.text if len(msg.text) <= _CONSOLE_MAX else msg.text[:_CONSOLE_MAX] + "…",
             source=location.get("url") if isinstance(location, dict) else None,
             line=location.get("lineNumber") if isinstance(location, dict) else None,
             timestamp=time.time(),
@@ -339,6 +373,7 @@ class Context:
         self.console.clear()
         self.errors.clear()
         self.navigations.clear()
+        self._body_bytes = 0
         self._pending.clear()
         self._pages.clear()
         self._last_cookies = []

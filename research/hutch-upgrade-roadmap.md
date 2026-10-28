@@ -72,9 +72,16 @@
 - [x] a client joining a browser acts on the tab in front, not the newest-listed (restored sessions)
 - [x] `hutch call` treats `key=value` as a keyword only for real parameters (selectors contain `=`)
 
+### v0.17.0 — done
+
+- [x] capture byte budget (64 MB of bodies per session, oldest bodies evicted first, metadata kept);
+      bounded in-flight request table, console text, websocket connection count
+- [x] artifacts keep the newest N per kind and session; chromium disk cache capped per profile
+- [x] `hutch gc`: old artifacts and downloads, stale state of stopped profiles, `--caches`, `--dry-run`;
+      running browsers and site data (cookies, storage) are never touched
+
 ### Next
 
-- [ ] byte-budgeted capture buffers, artifact retention, `hutch gc`
 - [ ] Windows transport (loopback TCP + token), PDEATHSIG equivalent (job objects)
 - [ ] tab leases / visual indicator on agent-driven tabs
 

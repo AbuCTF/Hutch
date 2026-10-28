@@ -492,6 +492,13 @@ async def cmd_view(_pool, args):
         await live.stop()
 
 
+async def cmd_gc(_pool, args):
+    from . import gc
+    from .artifacts import _DEFAULT_ARTIFACTS_DIR
+    gc.run(_base_dir(args), _DEFAULT_ARTIFACTS_DIR, days=args.days, caches=args.caches,
+           dry_run=args.dry_run)
+
+
 async def cmd_doctor(_pool, args):
     from . import doctor
     sys.exit(doctor.run(_base_dir(args)))
@@ -679,6 +686,7 @@ def main():
             "  close           same as stop\n"
             "  destroy         stop and delete a profile\n"
             "  doctor          check browsers, libraries, display and networking\n"
+            "  gc              free disk: old artifacts, downloads, stale state, --caches\n"
             "\n"
             "daemon:\n"
             "  serve           start persistent daemon\n"
@@ -854,6 +862,12 @@ def main():
     c = _sub("destroy")
     c.add_argument("name", help="session name")
     c.set_defaults(func=cmd_destroy)
+
+    c = _sub("gc")
+    c.add_argument("--days", type=float, default=30, help="remove artifacts and downloads older than this, default 30")
+    c.add_argument("--caches", action="store_true", help="also clear browser caches of stopped profiles")
+    c.add_argument("--dry-run", action="store_true", help="show what would be removed")
+    c.set_defaults(func=cmd_gc)
 
     c = _sub("doctor")
     c.set_defaults(func=cmd_doctor)
