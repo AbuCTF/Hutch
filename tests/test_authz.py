@@ -192,5 +192,10 @@ async def test_login_health_and_keep_alive(base, site, tmp_path):
         assert (await s.auth_check())["state"] == "in", "learned bearer token not sent"
         s.set_auth(f"{site}/api/me", expect="bob@corp.test")
         assert (await s.auth_check())["reason"] == "'bob@corp.test' missing from the probe"
+        found = await s.find_probe()
+        assert found["probe"] == f"{site}/api/me" and found["why"] == "200 with this session, 401 without"
+        assert s.auth["probe"] == f"{site}/api/me" and s.auth["login"] == str(login)
+        s.set_auth(f"{site}/api/me", expect="bob@corp.test")
+        await s.auth_check()
     reloaded = Session.from_profile_dir(os.path.join(base, "alice"))
     assert reloaded.auth["probe"].endswith("/api/me") and reloaded.auth["last"]["state"] == "out"

@@ -474,6 +474,16 @@ async def cmd_authz(pool, args):
 
 async def cmd_auth(pool, args):
     import time
+    if args.find:
+        if not args.name:
+            raise SystemExit("hutch: give a session name")
+        _running(args, headless=True)
+        s = await pool.get(args.name, launch=True)
+        found = await s.find_probe()
+        if not found:
+            raise SystemExit(f"hutch: no probe found in {args.name}'s traffic, browse while logged in first")
+        print(f"{s.name}: probe {found['probe']}, {found['why']}")
+        return
     if args.probe:
         s = _load(args, args.name)
         s.set_auth(args.probe, expect=args.expect, login=args.login)
@@ -866,6 +876,7 @@ def main():
     c.add_argument("--expect", metavar="TEXT", help="text the probe answer must contain")
     c.add_argument("--login", metavar="FILE", help="recording that logs in (hutch record)")
     c.add_argument("--keep", action="store_true", help="log in again with the recording if logged out")
+    c.add_argument("--find", action="store_true", help="pick a probe from this session's captured traffic")
     c.set_defaults(func=cmd_auth)
 
     c = _sub("authz")

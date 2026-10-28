@@ -114,6 +114,7 @@ hutch authz acme-alice acme-bob --caido 5123        # any request from caido his
 hutch auth acme-alice --probe https://api.acme.com/me --login alice-login.json
 hutch auth                                          # every identity: in / out, from one request
 hutch auth acme-alice --keep                        # logged out: replay the login, TOTP included
+hutch auth acme-alice --find                        # pick a probe from captured traffic: 200 with, 401 without
 ```
 
 #### Secrets, record and replay

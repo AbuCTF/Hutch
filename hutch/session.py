@@ -1195,9 +1195,10 @@ class Session:
 
     def set_auth(self, probe, *, expect=None, login=None):
         """How to tell this identity is logged in: probe is a url only a logged-in user gets
-        (e.g. /api/me), expect optional text it must contain, login a recording that logs in."""
-        self.auth = {"probe": probe, "expect": expect,
-                     "login": os.path.abspath(login) if login else None, "last": None}
+        (e.g. /api/me), expect optional text it must contain, login a recording that logs in
+        (kept from before when not given)."""
+        login = os.path.abspath(login) if login else (self.auth or {}).get("login")
+        self.auth = {"probe": probe, "expect": expect, "login": login, "last": None}
         self._save_meta()
         return self.auth
 
@@ -1228,6 +1229,39 @@ class Session:
         self._save_meta()
         self.events.emit("auth", state=state, reason=reason)
         return self.auth["last"]
+
+    async def find_probe(self, *, tries=8, save=True):
+        """Pick a login probe from captured traffic: a GET that answers this session and refuses
+        nobody (401/403, or a redirect to a login page). Saved as the probe unless save=False."""
+        from urllib.parse import urlparse
+        from .authz import _STATIC, _send
+        if not self.context:
+            raise RuntimeError(f"session '{self.name}' has no traffic capture")
+        hint = re.compile(r"/(?:api/)?(?:v\d+/)?(?:me|whoami|self|account|profile|user|users/me|session|settings)\b", re.I)
+        seen, found = set(), []
+        for e in reversed(self.context.network.all()):
+            if (e.method != "GET" or e.status != 200 or e.url in seen or not e.url.startswith("http")
+                    or _STATIC.search(e.url) or e.resource_type not in ("xhr", "fetch", "document")):
+                continue
+            seen.add(e.url)
+            found.append((0 if hint.search(urlparse(e.url).path) else 1,
+                          0 if e.resource_type != "document" else 1, e.size or 0, e))
+        found.sort(key=lambda x: x[:3])
+        for *_rank, e in found[:tries]:
+            request = {"method": "GET", "url": e.url, "headers": e.request_headers or {}}
+            mine = await _send(self._playwright, self, request)
+            if not 200 <= mine["status"] < 300:
+                continue
+            nobody = await _send(self._playwright, None, {**request, "_proxy": self.proxy})
+            location = (nobody.get("location") or "").lower()
+            refused = nobody["status"] in (401, 403) or (
+                300 <= nobody["status"] < 400 and any(w in location for w in ("login", "signin", "sign-in", "auth")))
+            if refused:
+                why = f"{mine['status']} with this session, {nobody['status']} without"
+                if save:
+                    self.set_auth(e.url)
+                return {"probe": e.url, "why": why}
+        return None
 
     async def keep_alive(self):
         """Check the login and, when it lapsed, replay the login recording in a spare tab."""
