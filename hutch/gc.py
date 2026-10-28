@@ -11,7 +11,8 @@ CACHE_DIRS = {
     "GraphiteDawnCache", "ShaderCache", "component_crx_cache", "optimization_guide_model_store",
     "OptGuideOnDeviceModel", "Crashpad", "BrowserMetrics",
 }
-_STATE = ("DevToolsActivePort", "hutch_browser.json", "SingletonLock", "SingletonSocket", "SingletonCookie")
+_STATE = ("DevToolsActivePort", "hutch_browser.json", "SingletonLock", "SingletonSocket", "SingletonCookie",
+          "lockfile")
 
 
 def _size(path):

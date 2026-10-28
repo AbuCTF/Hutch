@@ -1,10 +1,12 @@
 import asyncio
 import json
 import os
+import stat
 from dataclasses import dataclass
 from typing import Optional
 
 _DEFAULT_SOCK = os.path.expanduser("~/.hutch/hutch.sock")
+_DEFAULT_ENDPOINT = os.path.expanduser("~/.hutch/hutch.endpoint")
 
 
 class HutchError(Exception):
@@ -553,7 +555,8 @@ _RPC_BUFFER_LIMIT = 16 * 1024 * 1024
 class HutchClient:
 
     def __init__(self, sock_path=None):
-        self.sock_path = sock_path or _DEFAULT_SOCK
+        self.sock_path = sock_path or (_DEFAULT_ENDPOINT if os.path.exists(_DEFAULT_ENDPOINT)
+                                       and not os.path.exists(_DEFAULT_SOCK) else _DEFAULT_SOCK)
         self._reader = None
         self._writer = None
         self._req_id = 0
@@ -565,13 +568,19 @@ class HutchClient:
                 f"daemon not running (no socket at {self.sock_path}) — "
                 "start it with 'hutch serve'")
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(
-                self.sock_path, limit=_RPC_BUFFER_LIMIT)
-        except ConnectionRefusedError:
+            if stat.S_ISSOCK(os.stat(self.sock_path).st_mode):
+                self._reader, self._writer = await asyncio.open_unix_connection(
+                    self.sock_path, limit=_RPC_BUFFER_LIMIT)
+            else:
+                with open(self.sock_path) as f:
+                    endpoint = json.load(f)
+                self._reader, self._writer = await asyncio.open_connection(
+                    "127.0.0.1", endpoint["port"], limit=_RPC_BUFFER_LIMIT)
+                self._writer.write(json.dumps({"auth": endpoint["token"]}).encode() + b"\n")
+                await self._writer.drain()
+        except (ConnectionRefusedError, ValueError, KeyError, OSError):
             raise HutchError(
-                f"stale socket at {self.sock_path} — daemon is not running. "
-                "Remove the socket and start the daemon with 'hutch serve'"
-            ) from None
+                f"daemon not reachable at {self.sock_path}, start it with 'hutch serve'") from None
 
     async def close(self):
         if self._writer:

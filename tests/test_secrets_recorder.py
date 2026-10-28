@@ -64,7 +64,8 @@ async def base(tmp_path):
 def test_vault_file_resolve_domains_and_redaction(vault):
     secrets.set_secret("pw", 'hunter"2', ["Example.com"])
     secrets.set_secret("token", "tok-123456")
-    assert stat.S_IMODE(os.stat(vault).st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.stat(vault).st_mode) == 0o600
     assert secrets.listing() == [{"name": "pw", "domains": ["example.com"]},
                                  {"name": "token", "domains": []}]
     assert secrets.resolve("{{pw}}", "https://login.example.com/x") == 'hunter"2'

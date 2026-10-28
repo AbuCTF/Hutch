@@ -1,11 +1,14 @@
 import asyncio
 import json
 import os
+import secrets as _tokens
 import signal
+import sys
 import time
 from dataclasses import asdict
 
 from . import __version__, commands, secrets
+from . import browser as _browser
 from .artifacts import ArtifactStore
 from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
@@ -14,7 +17,8 @@ from .pool import Pool
 from .session import ProxyConfig, SessionState
 
 
-_DEFAULT_SOCK = os.path.expanduser("~/.hutch/hutch.sock")
+_TCP = sys.platform == "win32" or os.environ.get("HUTCH_TRANSPORT") == "tcp"
+_DEFAULT_SOCK = os.path.expanduser("~/.hutch/hutch.endpoint" if _TCP else "~/.hutch/hutch.sock")
 _DEFAULT_PID = os.path.expanduser("~/.hutch/hutch.pid")
 _RPC_BUFFER_LIMIT = 16 * 1024 * 1024
 
@@ -35,6 +39,7 @@ class HutchDaemon:
         self._clients = 0
         self._last_request = time.time()
         self._stop_event = None
+        self._token = None
 
     async def start(self):
         await self.pool.start()
@@ -43,10 +48,20 @@ class HutchDaemon:
         os.makedirs(os.path.dirname(self.sock_path), exist_ok=True)
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
-        self._server = await asyncio.start_unix_server(
-            self._handle_client, path=self.sock_path,
-            limit=_RPC_BUFFER_LIMIT)
-        os.chmod(self.sock_path, 0o600)
+        if _TCP:
+            # loopback TCP where unix sockets are unavailable; the endpoint file carries a token
+            self._token = _tokens.token_urlsafe(24)
+            self._server = await asyncio.start_server(
+                self._handle_client, "127.0.0.1", 0, limit=_RPC_BUFFER_LIMIT)
+            port = self._server.sockets[0].getsockname()[1]
+            fd = os.open(self.sock_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"port": port, "token": self._token, "pid": os.getpid()}, f)
+        else:
+            self._server = await asyncio.start_unix_server(
+                self._handle_client, path=self.sock_path,
+                limit=_RPC_BUFFER_LIMIT)
+            os.chmod(self.sock_path, 0o600)
         if self.idle_timeout > 0:
             self._idle_task = asyncio.create_task(self._idle_loop())
         self._write_pid()
@@ -69,10 +84,8 @@ class HutchDaemon:
 
     async def serve_forever(self):
         await self.start()
-        loop = asyncio.get_event_loop()
         self._stop_event = asyncio.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self._stop_event.set)
+        _browser.on_signal(self._stop_event.set, signal.SIGINT, signal.SIGTERM)
         await self._stop_event.wait()
         await self.stop()
 
@@ -121,6 +134,14 @@ class HutchDaemon:
         buf = b""
         self._clients += 1
         try:
+            if self._token:
+                hello = await asyncio.wait_for(reader.readline(), 10)
+                try:
+                    ok = _tokens.compare_digest(json.loads(hello).get("auth", ""), self._token)
+                except (ValueError, AttributeError, TypeError):
+                    ok = False
+                if not ok:
+                    return
             while True:
                 data = await reader.read(65536)
                 if not data:
@@ -137,7 +158,7 @@ class HutchDaemon:
                         continue
                     resp = await self._dispatch(req)
                     await self._send(writer, resp)
-        except (ConnectionResetError, BrokenPipeError):
+        except (ConnectionResetError, BrokenPipeError, asyncio.TimeoutError):
             pass
         finally:
             self._clients -= 1

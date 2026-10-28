@@ -80,9 +80,18 @@
 - [x] `hutch gc`: old artifacts and downloads, stale state of stopped profiles, `--caches`, `--dry-run`;
       running browsers and site data (cookies, storage) are never touched
 
+### v0.18.0 — done
+
+- [x] windows: loopback TCP daemon with a token endpoint file (also `HUTCH_TRANSPORT=tcp`), job object
+      kills an agent's headless browser with its owner, `lockfile` detection, OpenProcess liveness,
+      private-bytes memory, signal fallback where `add_signal_handler` is missing
+- [x] `browser_version` reads the file version on windows (`chrome.exe --version` opens a window there)
+- [x] browsers that close DevTools but keep their process (headless edge on windows) are ended after
+      their session is written; restore verified
+- [x] verified natively on windows 11 with python 3.13: edge + chromium, smoke test and 57 tests
+
 ### Next
 
-- [ ] Windows transport (loopback TCP + token), PDEATHSIG equivalent (job objects)
 - [ ] tab leases / visual indicator on agent-driven tabs
 
 ---

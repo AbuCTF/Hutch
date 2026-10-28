@@ -403,7 +403,7 @@ async def cmd_record(pool, args):
     await s.start_recording()
     print(f"{s.name}: recording, Ctrl+C to stop", flush=True)
     done = asyncio.Event()
-    asyncio.get_running_loop().add_signal_handler(signal.SIGINT, done.set)
+    browser.on_signal(done.set, signal.SIGINT)
     shown = 0
     while not done.is_set() and s.is_alive:
         steps = s._recording["steps"]

@@ -2326,7 +2326,7 @@ class Session:
             await cdp.send("Browser.close")
         except Exception:
             pass
-        await _browser.wait_exit(self.profile_dir, self._pid)
+        await _browser.wait_closed(self.profile_dir, self._pid)
 
     async def _teardown(self, *, keep_browser=False, clear_capture=True):
         self._closing = True

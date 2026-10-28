@@ -20,7 +20,7 @@ _PORT_FILE = "DevToolsActivePort"
 _COMPAT_ARGS = ["--password-store=basic", "--use-mock-keychain"]
 
 _CLONE_SKIP = {
-    "SingletonLock", "SingletonSocket", "SingletonCookie", _PORT_FILE, _STATE_FILE, _LOG_FILE,
+    "SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile", _PORT_FILE, _STATE_FILE, _LOG_FILE,
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache",
     "GraphiteDawnCache", "ShaderCache", "Crashpad", "BrowserMetrics", "component_crx_cache",
     "optimization_guide_model_store", "trace.zip", "downloads",
@@ -32,6 +32,8 @@ class BrowserError(RuntimeError):
 
 
 def is_wsl():
+    if not sys.platform.startswith("linux"):
+        return False
     try:
         with open("/proc/version") as f:
             return "microsoft" in f.read().lower()
@@ -80,7 +82,8 @@ _CANDIDATES = {
     "edge": {
         "linux": ["microsoft-edge", "microsoft-edge-stable"],
         "darwin": ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
-        "win32": [r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"],
+        "win32": [r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe",
+                  r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"],
     },
 }
 
@@ -136,6 +139,9 @@ def default_user_data_dir(browser):
 
 
 def browser_version(executable):
+    if sys.platform == "win32":
+        # chrome.exe --version opens a browser window on windows; read the file version instead
+        return _file_version(executable)
     try:
         out = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=10).stdout
     except Exception:
@@ -144,6 +150,23 @@ def browser_version(executable):
         if tok[:1].isdigit() and "." in tok:
             return tok
     return None
+
+
+def _file_version(path):
+    import ctypes
+    from ctypes import wintypes
+    ver = ctypes.windll.version
+    size = ver.GetFileVersionInfoSizeW(path, None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not ver.GetFileVersionInfoW(path, 0, size, data):
+        return None
+    info, length = ctypes.c_void_p(), wintypes.UINT()
+    if not ver.VerQueryValueW(data, "\\", ctypes.byref(info), ctypes.byref(length)):
+        return None
+    ms, ls = ctypes.cast(info, ctypes.POINTER(wintypes.DWORD * 13)).contents[2:4]
+    return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
 
 
 def real_user_agent(version):
@@ -193,8 +216,16 @@ def _pid_alive(pid):
     if not pid:
         return False
     if sys.platform == "win32":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True).stdout
-        return str(pid) in out
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -214,6 +245,17 @@ def _pid_alive(pid):
 
 def lock_pid(user_data_dir):
     """Pid holding chromium's profile lock (SingletonLock -> host-pid), if alive."""
+    if sys.platform == "win32":
+        # windows locks 'lockfile' exclusively and records no pid; trust our state file while it is held
+        lockfile = os.path.join(user_data_dir, "lockfile")
+        if not os.path.exists(lockfile):
+            return None
+        try:
+            os.remove(lockfile)
+            return None
+        except OSError:
+            pid = read_state(user_data_dir).get("pid")
+            return pid if _pid_alive(pid) else None
     try:
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
         pid = int(target.rsplit("-", 1)[1])
@@ -295,6 +337,36 @@ def _pdeathsig():
         pass
 
 
+_JOBS = []
+
+
+def _kill_with_parent(proc):
+    """Windows: put the browser in a job that is killed when this process exits."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _Limits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _Extended(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _Limits), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel = ctypes.windll.kernel32
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    job = kernel.CreateJobObjectW(None, None)
+    info = _Extended()
+    info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    kernel.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+    if kernel.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(proc._handle))):
+        _JOBS.append(job)
+
+
 def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_to_parent=False,
           env=None, timeout=20.0, **kw):
     """Start a detached browser on the profile. Returns status() once it is reachable.
@@ -320,11 +392,21 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
              "env": {**os.environ, **(env or {})}}
     if sys.platform == "win32":
         popen["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        if not tie_to_parent:
+            popen["creationflags"] |= subprocess.CREATE_BREAKAWAY_FROM_JOB
     else:
         popen["start_new_session"] = True
         if tie_to_parent and sys.platform.startswith("linux"):
             popen["preexec_fn"] = _pdeathsig
-    proc = subprocess.Popen(args, **popen)
+    try:
+        proc = subprocess.Popen(args, **popen)
+    except PermissionError:
+        # the parent's job forbids breakaway; the browser then shares its lifetime
+        popen["creationflags"] &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
+        proc = subprocess.Popen(args, **popen)
+    if tie_to_parent and sys.platform == "win32":
+        with contextlib.suppress(Exception):
+            _kill_with_parent(proc)
     log.close()
     with open(os.path.join(user_data_dir, _STATE_FILE), "w") as f:
         json.dump({"pid": proc.pid, "headless": headless, "browser": browser,
@@ -393,6 +475,39 @@ async def wait_exit(user_data_dir, pid=None, timeout=15.0):
     return False
 
 
+async def wait_closed(user_data_dir, pid, timeout=15.0, linger=3.0):
+    """Wait for a browser told to close. One that has shut DevTools down but keeps its process
+    (headless edge on windows never exits) is ended once its session is written."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    down = None
+    while loop.time() < deadline:
+        if not (_pid_alive(pid) if pid else status(user_data_dir)):
+            return True
+        if pid and read_endpoint(user_data_dir) is None:
+            down = down or loop.time()
+            if loop.time() - down >= linger:
+                await _end(pid)
+                return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def _end(pid):
+    if sys.platform == "win32":
+        await asyncio.to_thread(subprocess.run, ["taskkill", "/T", "/F", "/PID", str(pid)],
+                                capture_output=True)
+        return
+    with contextlib.suppress(Exception):
+        os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not _pid_alive(pid):
+            return
+        await asyncio.sleep(0.1)
+    with contextlib.suppress(Exception):
+        os.kill(pid, signal.SIGKILL)
+
+
 async def stop(user_data_dir, *, timeout=15.0):
     """Close gracefully (session saved for restore); kill only if it will not exit."""
     st = status(user_data_dir)
@@ -401,21 +516,18 @@ async def stop(user_data_dir, *, timeout=15.0):
     if st["ws"]:
         with contextlib.suppress(Exception):
             await cdp_call(st["ws"], "Browser.close")
-        if await wait_exit(user_data_dir, st["pid"], timeout):
+        if await wait_closed(user_data_dir, st["pid"], timeout):
             return True
     if st["pid"]:
-        with contextlib.suppress(Exception):
-            os.kill(st["pid"], signal.SIGTERM)
-        if await wait_exit(user_data_dir, st["pid"], 5):
-            return True
-        with contextlib.suppress(Exception):
-            os.kill(st["pid"], signal.SIGKILL)
+        await _end(st["pid"])
     return True
 
 
 def memory_mb(pid):
-    """Proportional memory of a browser's whole process tree (linux), else None."""
-    if not pid or not os.path.isdir("/proc"):
+    """Memory of a browser's whole process tree: proportional on linux, private bytes on windows."""
+    if pid and sys.platform == "win32":
+        return _memory_mb_windows(pid)
+    if not pid or not sys.platform.startswith("linux"):
         return None
     children = {}
     for d in os.listdir("/proc"):
@@ -442,6 +554,53 @@ def memory_mb(pid):
     return round(total / 1024)
 
 
+def _memory_mb_windows(pid):
+    import ctypes
+    from ctypes import wintypes
+
+    class _Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_char * 260)]
+
+    class _Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)]
+        _fields_ += [(n, ctypes.c_size_t) for n in (
+            "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+            "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage",
+            "PeakPagefileUsage", "PrivateUsage")]
+
+    kernel = ctypes.windll.kernel32
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = kernel.CreateToolhelp32Snapshot(0x2, 0)
+    children, entry = {}, _Entry()
+    entry.dwSize = ctypes.sizeof(_Entry)
+    ok = kernel.Process32First(wintypes.HANDLE(snap), ctypes.byref(entry))
+    while ok:
+        children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+        ok = kernel.Process32Next(wintypes.HANDLE(snap), ctypes.byref(entry))
+    kernel.CloseHandle(wintypes.HANDLE(snap))
+    psapi = ctypes.windll.psapi
+    total, stack, seen = 0, [int(pid)], set()
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        stack.extend(children.get(p, []))
+        handle = kernel.OpenProcess(0x1000, False, p)
+        if not handle:
+            continue
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(_Counters)
+        if psapi.GetProcessMemoryInfo(wintypes.HANDLE(handle), ctypes.byref(counters), counters.cb):
+            total += counters.PrivateUsage
+        kernel.CloseHandle(wintypes.HANDLE(handle))
+    return total // 1048576 if total else None
+
+
 def clone_profile(src, dst):
     """Copy a profile (logins, storage, settings) without caches or lock files."""
     if status(src):
@@ -464,6 +623,16 @@ def attach_hint():
         return ("WSL needs mirrored networking: set networkingMode=mirrored under [wsl2] in "
                 "%USERPROFILE%\\.wslconfig, then run wsl --shutdown")
     return ""
+
+
+def on_signal(callback, *signals):
+    """Run callback on the event loop when a signal arrives; works where add_signal_handler does not."""
+    loop = asyncio.get_running_loop()
+    for sig in signals or (signal.SIGINT,):
+        try:
+            loop.add_signal_handler(sig, callback)
+        except (NotImplementedError, RuntimeError):
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(callback))
 
 
 def open_url(url):

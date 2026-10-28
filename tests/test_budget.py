@@ -123,7 +123,7 @@ def test_gc_plans_and_removes_without_touching_running_profiles(tmp_path, monkey
     monkeypatch.setattr(browser, "status", lambda p: {"pid": 1} if p.endswith("running") else None)
 
     items = gc.run(str(base), str(arts), dry_run=True)
-    assert {(k, os.path.relpath(p, tmp_path)) for k, p, _ in items} == {
+    assert {(k, os.path.relpath(p, tmp_path).replace(os.sep, "/")) for k, p, _ in items} == {
         ("artifacts", "artifacts/s/screenshots/a.png"),
         ("downloads", "profiles/stopped/downloads/old.bin"),
         ("downloads", "profiles/running/downloads/old.bin"),

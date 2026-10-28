@@ -20,6 +20,19 @@ chromium, asks for sudo only if chromium's system libraries are missing, then ru
 `rm -rf ~/.hutch/venv ~/.local/bin/hutch ~/.local/bin/hutch-mcp` (profiles in
 `~/.hutch/profiles` are kept).
 
+on native Windows (PowerShell, Python 3.10+):
+
+```powershell
+pip install "hutch[mcp] @ https://github.com/AbuCTF/Hutch/archive/master.tar.gz"
+playwright install chromium --no-shell
+hutch doctor
+```
+
+the daemon listens on loopback TCP with a token in `~/.hutch/hutch.endpoint` instead of a unix
+socket, and an agent's headless browser is tied to it with a job object. `--browser edge` works
+without the chromium download; headless edge never exits on its own, so hutch ends it once it has
+written its session.
+
 from a checkout, for development:
 
 ```bash
