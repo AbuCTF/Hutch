@@ -8,12 +8,13 @@ from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
+from . import browser as _browser
 from .caido import CaidoClient, CaidoConfig
 from .differ import diff_responses
 from .session import Fingerprint, ProxyConfig, Session
 
 
-_DEFAULT_BASE_DIR = os.path.expanduser("~/.hutch/profiles")
+_DEFAULT_BASE_DIR = os.environ.get("HUTCH_BASE_DIR") or os.path.expanduser("~/.hutch/profiles")
 _log = logging.getLogger(__name__)
 
 
@@ -39,7 +40,11 @@ class Pool:
 
     async def stop(self):
         for s in list(self._sessions.values()):
-            await s.close()
+            # a visible window belongs to the human; leave it open when the agent side exits
+            if s.is_alive and not s.headless and s.launcher == "native":
+                await s.detach()
+            else:
+                await s.close()
         if self.caido:
             await self.caido.close()
             self.caido = None
@@ -74,7 +79,8 @@ class Pool:
 
     async def create(self, name, *, proxy=None, fingerprint=None,
                      headless=True, ignore_https_errors=False,
-                     launch=True, tags=None, caido=False):
+                     launch=True, tags=None, caido=False, launcher=None,
+                     browser="chromium", endpoint=None):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -94,6 +100,9 @@ class Pool:
             headless=headless,
             ignore_https_errors=ignore_https_errors,
             tags=tags,
+            launcher=launcher,
+            browser=browser,
+            endpoint=endpoint,
         )
 
         if launch:
@@ -133,6 +142,38 @@ class Pool:
     async def launch(self, name):
         return await self.get(name, launch=True)
 
+    async def attach(self, name, target):
+        """Register and connect to a browser hutch did not start (chrome|brave|edge|port|url)."""
+        if name in self._sessions:
+            session = self._sessions[name]
+            if session.endpoint != str(target):
+                raise ValueError(f"session '{name}' already exists")
+            return await self.get(name, launch=True)
+        return await self.create(name, endpoint=str(target))
+
+    async def set_headless(self, name, headless):
+        session = await self.get(name)
+        if not self._playwright:
+            raise RuntimeError("pool not started")
+        await session.set_headless(headless, self._playwright)
+        return session
+
+    def clone(self, src, dst):
+        source = self._sessions.get(src)
+        if not source:
+            raise KeyError(f"no session named '{src}'")
+        if dst in self._sessions:
+            raise ValueError(f"session '{dst}' already exists")
+        if source.is_alive:
+            raise RuntimeError(f"close '{src}' before cloning it")
+        dst_dir = os.path.join(self.base_dir, dst)
+        _browser.clone_profile(source.profile_dir, dst_dir)
+        session = Session.from_profile_dir(dst_dir)
+        session.name = dst
+        session._save_meta()
+        self._sessions[dst] = session
+        return session
+
     async def close(self, name):
         session = self._sessions.get(name)
         if session:
@@ -143,6 +184,8 @@ class Pool:
         if not session:
             raise KeyError(f"no session named '{name}'")
         await session.close()
+        if session.launcher != "external" and _browser.status(session.profile_dir):
+            await _browser.stop(session.profile_dir)
         if os.path.isdir(session.profile_dir):
             shutil.rmtree(session.profile_dir)
 

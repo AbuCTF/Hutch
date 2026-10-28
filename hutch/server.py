@@ -5,6 +5,7 @@ import signal
 import time
 from dataclasses import asdict
 
+from . import __version__
 from .artifacts import ArtifactStore
 from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
@@ -21,7 +22,7 @@ _RPC_BUFFER_LIMIT = 16 * 1024 * 1024
 class HutchDaemon:
 
     def __init__(self, *, base_dir=None, max_sessions=10,
-                 idle_timeout=900, sock_path=None):
+                 idle_timeout=900, sock_path=None, exit_when_idle=False):
         self.pool = Pool(base_dir=base_dir, max_sessions=max_sessions)
         self.artifacts = ArtifactStore()
         self.sock_path = sock_path or _DEFAULT_SOCK
@@ -30,6 +31,10 @@ class HutchDaemon:
         self._server = None
         self._idle_task = None
         self._running = False
+        self.exit_when_idle = exit_when_idle
+        self._clients = 0
+        self._last_request = time.time()
+        self._stop_event = None
 
     async def start(self):
         await self.pool.start()
@@ -65,10 +70,10 @@ class HutchDaemon:
     async def serve_forever(self):
         await self.start()
         loop = asyncio.get_event_loop()
-        stop_event = asyncio.Event()
+        self._stop_event = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop_event.set)
-        await stop_event.wait()
+            loop.add_signal_handler(sig, self._stop_event.set)
+        await self._stop_event.wait()
         await self.stop()
 
     def _write_pid(self):
@@ -82,11 +87,18 @@ class HutchDaemon:
 
     async def _idle_loop(self):
         while self._running:
-            await asyncio.sleep(60)
+            await asyncio.sleep(min(60, max(1, self.idle_timeout / 4)))
             now = time.time()
             for s in self.pool.list():
-                if s.is_alive and (now - s._last_activity) > self.idle_timeout:
+                # visible windows and browsers we only attached to belong to the human
+                if not s.is_alive or not s.headless or not s._owned:
+                    continue
+                if (now - s._last_activity) > self.idle_timeout:
                     await s.close()
+            if (self.exit_when_idle and self._stop_event and not self._clients
+                    and not any(s.is_alive for s in self.pool.list())
+                    and now - self._last_request > self.idle_timeout):
+                self._stop_event.set()
 
     def _get_health(self, name):
         if name not in self._health:
@@ -107,6 +119,7 @@ class HutchDaemon:
 
     async def _handle_client(self, reader, writer):
         buf = b""
+        self._clients += 1
         try:
             while True:
                 data = await reader.read(65536)
@@ -127,6 +140,8 @@ class HutchDaemon:
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
+            self._clients -= 1
+            self._last_request = time.time()
             writer.close()
             try:
                 await writer.wait_closed()
@@ -141,6 +156,7 @@ class HutchDaemon:
         method = req.get("method", "")
         params = req.get("params", {})
         req_id = req.get("id")
+        self._last_request = time.time()
 
         try:
             result = await self._call(method, params)
@@ -192,6 +208,10 @@ class HutchDaemon:
             "handoff": self._rpc_handoff,
             "status": self._rpc_status,
             "ping": self._rpc_ping,
+            "attach": self._rpc_attach,
+            "detach": self._rpc_detach,
+            "set_headless": self._rpc_set_headless,
+            "aria_snapshot": self._rpc_aria_snapshot,
             # navigation
             "go_back": self._rpc_go_back,
             "go_forward": self._rpc_go_forward,
@@ -287,6 +307,24 @@ class HutchDaemon:
     async def _rpc_ping(self, params):
         return {"pong": True, "uptime": time.time() - self._started_at}
 
+    async def _rpc_attach(self, params):
+        s = await self.pool.attach(params["name"], params["target"])
+        self._get_health(s.name)
+        return _session_info(s)
+
+    async def _rpc_detach(self, params):
+        s = await self.pool.get(params["name"])
+        await s.detach()
+        return {"detached": s.name}
+
+    async def _rpc_set_headless(self, params):
+        s = await self.pool.set_headless(params["name"], params["headless"])
+        return _session_info(s)
+
+    async def _rpc_aria_snapshot(self, params):
+        s = await self.pool.get(params["name"], launch=True)
+        return {"snapshot": await s.aria_snapshot(selector=params.get("selector"))}
+
     async def _rpc_create(self, params):
         name = params["name"]
         fp = None
@@ -307,6 +345,7 @@ class HutchDaemon:
             ignore_https_errors=params.get("ignore_https_errors", False),
             tags=params.get("tags", {}),
             caido=params.get("caido", False),
+            browser=params.get("browser", "chromium"),
         )
         self._get_health(name)
         return _session_info(s)
@@ -336,11 +375,10 @@ class HutchDaemon:
         s = await self.pool.get(name, launch=True)
         s._require_active()
         s._last_activity = time.time()
-        pages = [p for p in s._pages if not p.is_closed()]
-        if not pages:
+        page = s._active_page()
+        if not page:
             page = await s.new_page()
-            return s, page
-        return s, pages[-1]
+        return s, page
 
     async def _rpc_goto(self, params):
         s = await self.pool.get(params["name"], launch=True)
@@ -1007,6 +1045,10 @@ def _session_info(s):
         "proxy": s.proxy.server if s.proxy else None,
         "fingerprint": f"{s.fingerprint.viewport_width}x{s.fingerprint.viewport_height}",
         "tags": s.tags,
+        "launcher": s.launcher,
+        "browser": s.browser,
+        "owned": s._owned if s.is_alive else None,
+        "running": s.running,
     }
 
 
@@ -1036,7 +1078,7 @@ def _build_har(entries):
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "hutch", "version": "0.5.0"},
+            "creator": {"name": "hutch", "version": __version__},
             "entries": har_entries,
         }
     }

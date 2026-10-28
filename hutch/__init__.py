@@ -1,4 +1,8 @@
-__version__ = "0.7.0"
+try:
+    from importlib.metadata import version as _version
+    __version__ = _version("hutch")
+except Exception:
+    __version__ = "0.0.0"
 
 from .artifacts import ArtifactStore  # noqa: F401
 from .caido import CaidoClient, CaidoConfig, CaidoError  # noqa: F401

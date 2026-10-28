@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Optional
 from playwright._impl._errors import Error as PlaywrightError
 from playwright._impl._errors import TargetClosedError
 
+from . import browser as _browser
 from .context import Context, Snapshot
 
 _log = logging.getLogger(__name__)
@@ -71,6 +73,27 @@ _WS_FRAME_CAP = 200    # max frames stored per WebSocket connection
 _WS_PAYLOAD_MAX = 4096  # truncation limit for individual frame payloads
 
 
+_REF_RE = re.compile(r"^(?:f\d+)?e\d+$")
+
+
+def _ref(selector):
+    """Accept aria snapshot refs (e12, f1e3) anywhere a selector is expected."""
+    if isinstance(selector, str) and _REF_RE.match(selector):
+        return f"aria-ref={selector}"
+    return selector
+
+
+def _match_engine(fp, version):
+    """Pin a persona's UA / client-hint major to the real engine so features match the claim."""
+    if not fp or not fp.user_agent or not version:
+        return
+    major = version.split(".")[0]
+    fp.user_agent = re.sub(r"Chrome/\d+[\d.]*", f"Chrome/{major}.0.0.0", fp.user_agent)
+    if fp.sec_ch_ua:
+        fp.sec_ch_ua = re.sub(r'(Chromium|Google Chrome|Microsoft Edge|Brave)";v="\d+"',
+                              rf'\1";v="{major}"', fp.sec_ch_ua)
+
+
 def _is_disconnect(exc):
     """Return True if exc signals a dead page/context/browser."""
     if isinstance(exc, TargetClosedError):
@@ -90,8 +113,8 @@ def _ua_override_params(fp):
     import re
     ua = fp.user_agent or ""
     m = re.search(r"Chrome/(\d+)(?:\.[\d.]+)?", ua)
-    major = m.group(1) if m else "137"
-    full = m.group(0).split("/", 1)[1] if m else "137.0.0.0"
+    major = m.group(1) if m else "156"
+    full = m.group(0).split("/", 1)[1] if m else "156.0.0.0"
     brands = [{"brand": b, "version": v} for b, v in re.findall(r'"([^"]+)";v="([^"]+)"', fp.sec_ch_ua or "")]
     if not brands:
         brands = [{"brand": "Chromium", "version": major},
@@ -166,12 +189,24 @@ class Session:
     def __init__(self, name, profile_dir, *,
                  proxy=None, fingerprint=None, headless=True,
                  ignore_https_errors=False, stealth=True, tags=None,
-                 capture=True, record_video=None):
+                 capture=True, record_video=None, launcher=None,
+                 browser="chromium", endpoint=None):
         self.name = name
         self.profile_dir = profile_dir
         self.proxy = proxy
+        # persona = explicit fingerprint; otherwise the real browser identity is used untouched
+        self.persona = fingerprint is not None
         self.fingerprint = fingerprint or Fingerprint()
         self.headless = headless
+        self.browser = browser or "chromium"
+        self.endpoint = endpoint
+        if endpoint:
+            launcher = "external"
+        if launcher is None:
+            needs_pw = bool(record_video or (proxy and proxy.username)
+                            or self.fingerprint.is_mobile or self.fingerprint.has_touch)
+            launcher = "playwright" if needs_pw else "native"
+        self.launcher = launcher
         self.ignore_https_errors = ignore_https_errors
         self.stealth = stealth
         self.tags = tags or {}
@@ -201,6 +236,12 @@ class Session:
         self._watchdog_task = None
         self._last_url = None
         self._websockets = []
+        self._owned = False
+        self._closing = False
+        self._pid = None
+        self._playwright = None
+        self._focus = None
+        self._close_callbacks = []
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -226,7 +267,13 @@ class Session:
                 "geolocation": self.fingerprint.geolocation,
                 "disable_webrtc": self.fingerprint.disable_webrtc,
                 "extra_headers": self.fingerprint.extra_headers,
+                "sec_ch_ua": self.fingerprint.sec_ch_ua,
             },
+            "persona": self.persona,
+            "launcher": self.launcher,
+            "browser": self.browser,
+            "endpoint": self.endpoint,
+            "stealth": self.stealth,
             "headless": self.headless,
             "ignore_https_errors": self.ignore_https_errors,
             "tags": self.tags,
@@ -265,15 +312,22 @@ class Session:
             geolocation=fp_meta.get("geolocation"),
             disable_webrtc=fp_meta.get("disable_webrtc", True),
             extra_headers=fp_meta.get("extra_headers", {}),
+            sec_ch_ua=fp_meta.get("sec_ch_ua"),
         )
+        # profiles from before 0.12 were always launched by playwright with a fingerprint
+        legacy = "launcher" not in meta
         s = cls(
             name=meta["name"],
             profile_dir=profile_dir,
             proxy=proxy,
-            fingerprint=fp,
+            fingerprint=fp if meta.get("persona", legacy) else None,
             headless=meta.get("headless", True),
             ignore_https_errors=meta.get("ignore_https_errors", False),
+            stealth=meta.get("stealth", True),
             tags=meta.get("tags", {}),
+            launcher=meta.get("launcher", "playwright" if legacy else None),
+            browser=meta.get("browser", "chromium"),
+            endpoint=meta.get("endpoint"),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -287,9 +341,9 @@ class Session:
         fp = self.fingerprint
         chrome_args = [
             "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
             "--no-first-run",
             "--no-default-browser-check",
+            "--remote-debugging-port=0",
         ]
         if not self.headless:
             chrome_args.append(f"--class={self._window_class()}")
@@ -306,6 +360,8 @@ class Session:
         args = {
             "user_data_dir": self.profile_dir,
             "headless": self.headless,
+            # full binary in both modes: same profile lock, codecs and version as headed
+            "channel": "chromium",
             "viewport": None if not self.headless else {"width": fp.viewport_width, "height": fp.viewport_height},
             "screen": {"width": fp.screen_width, "height": fp.screen_height},
             "locale": fp.locale,
@@ -351,7 +407,8 @@ class Session:
 
     async def _sync_hyprland_viewport(self, page):
         """Match a headed page viewport to its fractionally-scaled tile."""
-        if self.headless or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        # native windows are never viewport-emulated, so there is nothing to resync
+        if self.headless or self.launcher == "native" or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
             return
 
         try:
@@ -427,27 +484,38 @@ class Session:
                 self.name, exc,
             )
 
+    @property
+    def _spoof(self):
+        return self.persona and self.stealth
+
     async def launch(self, playwright):
         if self._context:
             return self._context
-        kwargs = self._launch_args()
-        self._context = await playwright.chromium.launch_persistent_context(**kwargs)
+        self._playwright = playwright
+        running = None if self.endpoint else _browser.status(self.profile_dir)
+        if self.endpoint:
+            ws = await asyncio.to_thread(_browser.resolve_endpoint, self.endpoint)
+            await self._connect(playwright, {"ws": ws}, owned=False)
+        elif running and running["ws"]:
+            await self._connect(playwright, running, owned=False)
+        elif running:
+            raise RuntimeError(
+                f"session '{self.name}' is open in a browser without agent access "
+                f"(pid {running['pid']}) — close that window first")
+        elif self.launcher == "native":
+            await self._spawn(playwright)
+        else:
+            await self._launch_playwright(playwright)
         self._launched_at = time.time()
         self._last_activity = time.time()
         self.state = SessionState.ACTIVE
-        if self.fingerprint.platform and not self.stealth:
-            await self._context.add_init_script(
-                f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{self.fingerprint.platform}'}})"
-            )
-        if self.stealth:
-            from .stealth import apply_stealth
-            await apply_stealth(self._context, fingerprint=self.fingerprint)
+        await self._apply_persona()
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
         # apply the UA/client-hint override to initial pages NOW (awaited) so the first
         # request carries the right sec-ch-ua, not racing the ensure_future in _setup_page.
-        if self.stealth and self.fingerprint and self.fingerprint.sec_ch_ua:
+        if self._spoof and self.fingerprint.user_agent:
             for page in self._pages:
                 await self._apply_ua_override(page)
         def _on_new_page(page):
@@ -457,18 +525,130 @@ class Session:
         self._start_watchdog()
         return self._context
 
+    async def _launch_playwright(self, playwright):
+        kwargs = self._launch_args()
+        if self.persona:
+            _match_engine(self.fingerprint, await asyncio.to_thread(
+                _browser.browser_version, playwright.chromium.executable_path))
+            if self.fingerprint.user_agent:
+                kwargs["user_agent"] = self.fingerprint.user_agent
+        elif self.headless:
+            kwargs["user_agent"] = _browser.real_user_agent(await asyncio.to_thread(
+                _browser.browser_version, playwright.chromium.executable_path))
+        self._context = await playwright.chromium.launch_persistent_context(**kwargs)
+        self._owned = True
+        self._context.on("close", lambda _: self._on_browser_gone())
+
+    def spawn_options(self, *, restore=True):
+        """Keyword arguments for browser.spawn() that reproduce this session's setup."""
+        fp = self.fingerprint
+        kw = {
+            "browser": self.browser,
+            "headless": self.headless,
+            "restore": restore,
+            "ignore_https_errors": self.ignore_https_errors,
+        }
+        if not self.headless:
+            kw["window_class"] = self._window_class()
+            kw["maximize"] = not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+        if self.proxy:
+            kw["proxy"] = self.proxy.server
+            kw["proxy_bypass"] = self.proxy.bypass
+        extra, env = [], {}
+        if fp.disable_webrtc:
+            extra.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+        if self.persona:
+            if fp.user_agent:
+                _match_engine(fp, _browser.browser_version(_browser.find_executable(self.browser)))
+                kw["user_agent"] = fp.user_agent
+            kw["lang"] = fp.locale
+            if self.headless:
+                kw["window_size"] = (fp.viewport_width, fp.viewport_height)
+            if fp.device_scale_factor and fp.device_scale_factor != 1.0:
+                extra.append(f"--force-device-scale-factor={fp.device_scale_factor}")
+            if fp.color_scheme == "dark":
+                extra.append("--force-dark-mode")
+            if fp.timezone and sys.platform != "win32":
+                env["TZ"] = fp.timezone
+        elif self.headless:
+            kw["window_size"] = (fp.viewport_width, fp.viewport_height)
+        kw["extra"] = extra
+        kw["env"] = env
+        return kw
+
+    async def _spawn(self, playwright, *, restore=True):
+        kw = await asyncio.to_thread(self.spawn_options, restore=restore)
+        # headed browsers outlive their launcher; headless ones die with it
+        info = await asyncio.to_thread(_browser.spawn, self.profile_dir,
+                                       tie_to_parent=self.headless, **kw)
+        await self._connect(playwright, info, owned=True)
+
+    async def _connect(self, playwright, info, *, owned):
+        self._browser = await playwright.chromium.connect_over_cdp(info["ws"], no_defaults=True)
+        self._context = self._browser.contexts[0]
+        self._owned = owned
+        self._pid = info.get("pid")
+        if info.get("headless") is not None:
+            self.headless = info["headless"]
+        self._browser.on("disconnected", lambda _: self._on_browser_gone())
+
+    async def _apply_persona(self):
+        if not self.persona:
+            return
+        fp = self.fingerprint
+        if self._spoof:
+            from .stealth import apply_stealth
+            seed = int.from_bytes(self.name.encode()[:4].ljust(4, b'\0'), 'big')
+            await apply_stealth(self._context, fingerprint=fp, seed=seed, headless=self.headless)
+        elif fp.platform:
+            await self._context.add_init_script(
+                f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{fp.platform}'}})"
+            )
+        if self.launcher == "native":
+            if fp.extra_headers:
+                await self._context.set_extra_http_headers(fp.extra_headers)
+            if fp.geolocation:
+                await self._context.grant_permissions(["geolocation"])
+                await self._context.set_geolocation(fp.geolocation)
+
+    def _on_browser_gone(self):
+        """Window closed / browser exited outside our control: drop refs, keep the profile."""
+        if self._closing:
+            return
+        _log.info("session '%s': browser gone, hibernating", self.name)
+        self._stop_watchdog()
+        self._context = None
+        self._browser = None
+        self._focus = None
+        self._pages = []
+        self._cdp_session = None
+        self._launched_at = None
+        if self.state != SessionState.PAUSED:
+            self.state = SessionState.HIBERNATED
+        for cb in list(self._close_callbacks):
+            try:
+                cb(self.name)
+            except Exception:
+                pass
+
+    def on_close(self, callback):
+        self._close_callbacks.append(callback)
+        return lambda: self._close_callbacks.remove(callback)
+
     def _setup_page(self, page):
         if self.context:
             self.context.hook_page(page)
         if self._dialog_handler:
             page.on("dialog", self._dialog_handler)
         page.on("download", lambda dl: self._downloads.append(dl))
+        page.on("popup", lambda popup, opener=page: self._follow_popup(opener, popup))
+        page.on("close", lambda _: self._on_page_closed())
         # propagate intercept rules to new pages (popups, target=_blank, etc.)
         # page.route() is async; batch into one coroutine with error handling
         if self._intercept_rules:
             asyncio.ensure_future(self._apply_intercept_rules(page))
         # match sec-ch-ua client-hints to the fingerprint (no HeadlessChrome leak)
-        if self.stealth and self.fingerprint and self.fingerprint.sec_ch_ua:
+        if self._spoof and self.fingerprint.user_agent:
             asyncio.ensure_future(self._apply_ua_override(page))
         self._track_websockets(page)
         self._watch_hyprland_viewport(page)
@@ -702,12 +882,29 @@ class Session:
         # _on_new_page handler (registered in launch()) appends the page
         # to self._pages and calls _setup_page -- no explicit append here
         page = await self._context.new_page()
+        self._focus = page
         self._last_activity = time.time()
         return page
 
+    def _on_page_closed(self):
+        # playwright-launched windows linger with zero tabs; native chromium exits by itself
+        if (self.launcher == "playwright" and not self.headless and not self._closing
+                and self._context and not any(not p.is_closed() for p in self._pages)):
+            asyncio.ensure_future(self.close())
+
+    def _follow_popup(self, opener, popup):
+        if self._focus is None or self._focus is opener:
+            self._focus = popup
+
     def _active_page(self):
+        """The tab this session drives: its focus, else the newest open tab.
+
+        On a browser the human is using, tabs they open never steal the agent's focus.
+        """
         if not self._context:
             return None
+        if self._focus is not None and not self._focus.is_closed():
+            return self._focus
         pages = [p for p in self._pages if not p.is_closed()]
         return pages[-1] if pages else None
 
@@ -736,7 +933,7 @@ class Session:
             url = page.url
             title = await page.title()
             try:
-                dom = await page.accessibility.snapshot()
+                dom = await page.aria_snapshot(mode="ai")
             except Exception:
                 pass
             if screenshot:
@@ -790,7 +987,9 @@ class Session:
     @_retry_on_disconnect
     async def goto(self, url, *, wait_until="load"):
         self._require_active()
-        page = self._active_page()
+        # attached to someone's visible browser: work in our own tab, never theirs
+        shared = self._browser is not None and not self._owned and not self.headless and self._focus is None
+        page = None if shared else self._active_page()
         if not page:
             page = await self.new_page()
         self._last_activity = time.time()
@@ -806,7 +1005,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.click(selector)
+        await page.click(_ref(selector))
         if wait_after:
             try:
                 await page.wait_for_load_state(wait_after, timeout=timeout)
@@ -821,9 +1020,9 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.fill(selector, value)
+        await page.fill(_ref(selector), value)
         if press_enter:
-            await page.press(selector, "Enter")
+            await page.press(_ref(selector), "Enter")
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -833,7 +1032,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.type(selector, text, delay=delay)
+        await page.type(_ref(selector), text, delay=delay)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -843,7 +1042,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.press(selector, key)
+        await page.press(_ref(selector), key)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -853,7 +1052,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.select_option(selector, value)
+        await page.select_option(_ref(selector), value)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -875,7 +1074,7 @@ class Session:
         if url:
             await page.wait_for_url(url, timeout=timeout)
         elif selector:
-            await page.wait_for_selector(selector, state=state, timeout=timeout)
+            await page.wait_for_selector(_ref(selector), state=state, timeout=timeout)
         return await self.page_state()
 
     async def cookies(self, urls=None):
@@ -963,7 +1162,7 @@ class Session:
         self._last_activity = time.time()
         dom = None
         try:
-            dom = await page.accessibility.snapshot()
+            dom = await page.aria_snapshot(mode="ai")
         except Exception:
             pass
         url = page.url
@@ -973,6 +1172,14 @@ class Session:
             "title": await page.title(),
             "dom": dom,
         }
+
+    @_retry_on_disconnect
+    async def aria_snapshot(self, *, selector=None):
+        """Accessibility tree with refs (e12) usable as selectors in every action."""
+        page = self._require_page()
+        if selector:
+            return await page.locator(_ref(selector)).aria_snapshot(mode="ai")
+        return await page.aria_snapshot(mode="ai")
 
     @_retry_on_disconnect(fallback=[])
     async def observe(self):
@@ -1064,13 +1271,13 @@ class Session:
     @_retry_on_disconnect
     async def hover(self, selector):
         page = self._require_page()
-        await page.hover(selector)
+        await page.hover(_ref(selector))
         return await self.page_state()
 
     @_retry_on_disconnect
     async def dblclick(self, selector, *, wait_after="networkidle", timeout=5000):
         page = self._require_page()
-        await page.dblclick(selector)
+        await page.dblclick(_ref(selector))
         if wait_after:
             try:
                 await page.wait_for_load_state(wait_after, timeout=timeout)
@@ -1081,14 +1288,14 @@ class Session:
     @_retry_on_disconnect
     async def right_click(self, selector):
         page = self._require_page()
-        await page.click(selector, button="right")
+        await page.click(_ref(selector), button="right")
         return await self.page_state()
 
     @_retry_on_disconnect
     async def scroll(self, *, direction="down", amount=500, selector=None):
         page = self._require_page()
         if selector:
-            loc = page.locator(selector)
+            loc = page.locator(_ref(selector))
             await loc.scroll_into_view_if_needed()
         else:
             delta_x, delta_y = 0, 0
@@ -1106,48 +1313,48 @@ class Session:
     @_retry_on_disconnect
     async def focus(self, selector):
         page = self._require_page()
-        await page.focus(selector)
+        await page.focus(_ref(selector))
 
     @_retry_on_disconnect
     async def check(self, selector):
         page = self._require_page()
-        await page.check(selector)
+        await page.check(_ref(selector))
         return await self.page_state()
 
     @_retry_on_disconnect
     async def uncheck(self, selector):
         page = self._require_page()
-        await page.uncheck(selector)
+        await page.uncheck(_ref(selector))
         return await self.page_state()
 
     @_retry_on_disconnect
     async def set_checked(self, selector, checked):
         page = self._require_page()
-        await page.set_checked(selector, checked)
+        await page.set_checked(_ref(selector), checked)
         return await self.page_state()
 
     @_retry_on_disconnect
     async def set_input_files(self, selector, files):
         page = self._require_page()
-        await page.set_input_files(selector, files)
+        await page.set_input_files(_ref(selector), files)
         return await self.page_state()
 
     @_retry_on_disconnect
     async def drag_and_drop(self, source, target):
         page = self._require_page()
-        await page.drag_and_drop(source, target)
+        await page.drag_and_drop(_ref(source), _ref(target))
         return await self.page_state()
 
     @_retry_on_disconnect
     async def tap(self, selector):
         page = self._require_page()
-        await page.tap(selector)
+        await page.tap(_ref(selector))
         return await self.page_state()
 
     @_retry_on_disconnect
     async def dispatch_event(self, selector, event_type, event_init=None):
         page = self._require_page()
-        await page.dispatch_event(selector, event_type, event_init)
+        await page.dispatch_event(_ref(selector), event_type, event_init)
 
     # --- content extraction ---
 
@@ -1159,54 +1366,54 @@ class Session:
     @_retry_on_disconnect
     async def inner_text(self, selector):
         page = self._require_page()
-        return await page.inner_text(selector)
+        return await page.inner_text(_ref(selector))
 
     @_retry_on_disconnect
     async def inner_html(self, selector):
         page = self._require_page()
-        return await page.inner_html(selector)
+        return await page.inner_html(_ref(selector))
 
     @_retry_on_disconnect
     async def text_content(self, selector):
         page = self._require_page()
-        return await page.text_content(selector)
+        return await page.text_content(_ref(selector))
 
     @_retry_on_disconnect
     async def get_attribute(self, selector, name):
         page = self._require_page()
-        return await page.get_attribute(selector, name)
+        return await page.get_attribute(_ref(selector), name)
 
     @_retry_on_disconnect
     async def input_value(self, selector):
         page = self._require_page()
-        return await page.input_value(selector)
+        return await page.input_value(_ref(selector))
 
     # --- element state ---
 
     @_retry_on_disconnect
     async def is_visible(self, selector):
         page = self._require_page()
-        return await page.is_visible(selector)
+        return await page.is_visible(_ref(selector))
 
     @_retry_on_disconnect
     async def is_checked(self, selector):
         page = self._require_page()
-        return await page.is_checked(selector)
+        return await page.is_checked(_ref(selector))
 
     @_retry_on_disconnect
     async def is_enabled(self, selector):
         page = self._require_page()
-        return await page.is_enabled(selector)
+        return await page.is_enabled(_ref(selector))
 
     @_retry_on_disconnect
     async def is_hidden(self, selector):
         page = self._require_page()
-        return await page.is_hidden(selector)
+        return await page.is_hidden(_ref(selector))
 
     @_retry_on_disconnect
     async def is_editable(self, selector):
         page = self._require_page()
-        return await page.is_editable(selector)
+        return await page.is_editable(_ref(selector))
 
     # --- frame support ---
 
@@ -1244,7 +1451,7 @@ class Session:
             raise RuntimeError("specify frame name or url")
         if not frame:
             raise RuntimeError("frame not found")
-        await frame.click(selector)
+        await frame.click(_ref(selector))
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -1258,7 +1465,7 @@ class Session:
             raise RuntimeError("specify frame name or url")
         if not frame:
             raise RuntimeError("frame not found")
-        await frame.fill(selector, value)
+        await frame.fill(_ref(selector), value)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -1295,7 +1502,7 @@ class Session:
         elif text:
             loc = page.get_by_text(text)
         elif selector:
-            loc = page.locator(selector)
+            loc = page.locator(_ref(selector))
         else:
             raise RuntimeError("specify at least one locator parameter")
         count = await loc.count()
@@ -1381,7 +1588,7 @@ class Session:
         page = self._require_page()
         async with page.expect_popup() as popup_info:
             if click_action:
-                await page.click(action_selector)
+                await page.click(_ref(action_selector))
         popup = popup_info.value
         # _on_new_page handler already appended popup to self._pages
         # and called _setup_page (which hooks context + intercepts + ws)
@@ -1402,6 +1609,7 @@ class Session:
         target = pages[index]
         self._pages.remove(target)
         self._pages.append(target)
+        self._focus = target
         await target.bring_to_front()
         return await self.page_state()
 
@@ -1444,7 +1652,7 @@ class Session:
     async def expect_download(self, action_selector, *, save_path=None):
         page = self._require_page()
         async with page.expect_download() as dl_info:
-            await page.click(action_selector)
+            await page.click(_ref(action_selector))
         download = dl_info.value
         result = {
             "suggested_filename": download.suggested_filename,
@@ -1778,35 +1986,128 @@ class Session:
         path = os.path.join(self.profile_dir, "storage_state.json")
         await self._context.storage_state(path=path)
 
-    async def close(self):
-        self._stop_watchdog()
-        if self._cdp_session:
-            try:
-                await self._cdp_session.detach()
-            except Exception:
-                pass
-            self._cdp_session = None
-        if self._context:
-            try:
-                await self._context.close()
-            except Exception:
-                pass
+    async def _shutdown_browser(self):
+        """Graceful Browser.close so chromium writes its session for --restore-last-session."""
+        try:
+            cdp = await self._browser.new_browser_cdp_session()
+            await cdp.send("Browser.close")
+        except Exception:
+            pass
+        await _browser.wait_exit(self.profile_dir, self._pid)
+
+    async def _teardown(self, *, keep_browser=False, clear_capture=True):
+        self._closing = True
+        try:
+            self._stop_watchdog()
+            if self._cdp_session:
+                try:
+                    await self._cdp_session.detach()
+                except Exception:
+                    pass
+                self._cdp_session = None
+            if self._browser:
+                if not keep_browser:
+                    await self._shutdown_browser()
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+            elif self._context and not keep_browser:
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
             self._context = None
+            self._browser = None
+            self._focus = None
             self._pages = []
             self._popup_pages = []
             self._downloads = []
             self._websockets = []
-            self._dialog_handler = None
             self._pending_dialog = None
             self._launched_at = None
-            if self.context:
+            if clear_capture and self.context:
                 self.context.clear()
             if self.state != SessionState.PAUSED:
                 self.state = SessionState.HIBERNATED
+        finally:
+            self._closing = False
+
+    async def close(self):
+        """Close the browser if this session owns it; just disconnect from one it attached to."""
+        if not self._context:
+            return
+        await self._teardown(keep_browser=not self._owned)
+        self._dialog_handler = None
+
+    async def detach(self):
+        """Disconnect but leave the browser running (e.g. a human's headed window)."""
+        if not self._context:
+            return
+        await self._teardown(keep_browser=True)
+        self._dialog_handler = None
+
+    async def set_headless(self, headless, playwright=None):
+        """Relaunch the same profile headed or headless; tabs and session state carry over."""
+        playwright = playwright or self._playwright
+        if self.is_alive and self.headless == headless:
+            return self.status()
+        if self.launcher == "external":
+            raise RuntimeError("an attached external browser cannot be relaunched by hutch")
+        carry = None
+        if self.is_alive and self.launcher != "native":
+            carry = await self._carry_state()
+        if self.is_alive:
+            await self._teardown(keep_browser=False, clear_capture=False)
+        elif _browser.status(self.profile_dir):
+            await _browser.stop(self.profile_dir)
+        self.headless = headless
+        self._save_meta()
+        await self.launch(playwright)
+        if carry:
+            await self._restore_state(carry)
+        return self.status()
+
+    async def _carry_state(self):
+        cookies = [c for c in await self._context.cookies() if c.get("expires", -1) == -1]
+        tabs = []
+        for p in self._pages:
+            if p.is_closed() or not p.url.startswith("http"):
+                continue
+            try:
+                store = await p.evaluate(
+                    "() => Object.fromEntries(Object.keys(sessionStorage).map(k => [k, sessionStorage.getItem(k)]))")
+            except Exception:
+                store = {}
+            tabs.append({"url": p.url, "session_storage": store})
+        return {"cookies": cookies, "tabs": tabs}
+
+    async def _restore_state(self, carry):
+        if carry["cookies"]:
+            await self._context.add_cookies(carry["cookies"])
+        blank = [p for p in self._pages if not p.is_closed() and p.url in ("about:blank", "")]
+        for tab in carry["tabs"]:
+            page = blank.pop(0) if blank else await self._context.new_page()
+            try:
+                await page.goto(tab["url"], wait_until="domcontentloaded")
+                if tab["session_storage"]:
+                    await page.evaluate(
+                        "s => { for (const [k, v] of Object.entries(s)) sessionStorage.setItem(k, v) }",
+                        tab["session_storage"])
+                    await page.reload(wait_until="domcontentloaded")
+            except Exception as exc:
+                _log.warning("session '%s': could not restore %s: %s", self.name, tab["url"], exc)
 
     @property
     def is_alive(self):
         return self._context is not None
+
+    @property
+    def running(self):
+        """A browser holds this profile, connected to this process or not."""
+        if self.is_alive:
+            return True
+        return False if self.endpoint else bool(_browser.status(self.profile_dir))
 
     @property
     def page_count(self):
@@ -1831,6 +2132,12 @@ class Session:
             "tags": self.tags,
             "state": self.state.value,
             "pause_reason": self.pause_reason,
+            "launcher": self.launcher,
+            "browser": self.browser,
+            "persona": self.persona,
+            "owned": self._owned if self.is_alive else None,
+            "running": self.running,
+            "pid": self._pid,
         }
 
     def __repr__(self):

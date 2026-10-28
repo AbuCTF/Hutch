@@ -17,14 +17,26 @@ if [ "$PY_MAJ" -lt 3 ] || { [ "$PY_MAJ" -eq 3 ] && [ "$PY_MIN" -lt 10 ]; }; then
     exit 1
 fi
 
-echo "[1/3] installing hutch + dependencies"
-pip install -e ".[dev]" -q
+echo "[1/4] installing hutch + dependencies"
+pip install -e ".[dev,mcp]" -q
 
-echo "[2/3] installing chromium browser"
-python3 -m playwright install chromium
+echo "[2/4] installing chromium (full build; the headless-only shell is not used)"
+python3 -m playwright install chromium --no-shell
 
-echo "[3/3] installing system dependencies for chromium"
-python3 -m playwright install-deps chromium 2>/dev/null || true
+echo "[3/4] installing system libraries for chromium"
+if [ "$(uname)" = "Linux" ]; then
+    if command -v apt-get &>/dev/null; then
+        PW="$(command -v playwright || echo "python3 -m playwright")"
+        if [ "$(id -u)" -eq 0 ]; then
+            $PW install-deps chromium
+        else
+            sudo $PW install-deps chromium
+        fi
+    else
+        echo "  not a Debian/Ubuntu system — install chromium's libraries (nss, atk, gbm, xkbcommon, fonts)"
+        echo "  with your package manager; 'hutch doctor' lists anything missing"
+    fi
+fi
 
-echo
-echo "done. run 'hutch --version' to verify."
+echo "[4/4] checking"
+hutch doctor || true

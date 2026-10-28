@@ -79,6 +79,19 @@ class SessionHandle:
     async def observe(self):
         return await self._client._call("observe", {"name": self.name})
 
+    async def aria_snapshot(self, *, selector=None):
+        r = await self._client._call("aria_snapshot", {"name": self.name, "selector": selector})
+        return r.get("snapshot")
+
+    async def headed(self):
+        return await self._client._call("set_headless", {"name": self.name, "headless": False})
+
+    async def headless(self):
+        return await self._client._call("set_headless", {"name": self.name, "headless": True})
+
+    async def detach(self):
+        return await self._client._call("detach", {"name": self.name})
+
     async def page_state(self):
         return await self._client._call("snapshot", {
             "name": self.name, "full": False})
@@ -570,7 +583,8 @@ class HutchClient:
 
     async def create(self, name, *, program=None, preset=None, proxy=None,
                      headless=True, ignore_https_errors=False,
-                     locale=None, timezone=None, tags=None, caido=False):
+                     locale=None, timezone=None, tags=None, caido=False,
+                     browser="chromium"):
         result = await self._call("create", {
             "name": name, "program": program, "preset": preset,
             "proxy": proxy, "headless": headless,
@@ -578,7 +592,12 @@ class HutchClient:
             "locale": locale, "timezone": timezone,
             "tags": tags or {},
             "caido": caido,
+            "browser": browser,
         })
+        return SessionHandle(self, name)
+
+    async def attach(self, name, target):
+        await self._call("attach", {"name": name, "target": target})
         return SessionHandle(self, name)
 
     async def session(self, name):

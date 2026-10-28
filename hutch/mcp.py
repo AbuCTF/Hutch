@@ -1,5 +1,8 @@
 """MCP server -- exposes Hutch browser session tools to Claude/agents via MCP.
 
+Sessions are real chromium processes reachable over CDP, so the MCP server, the daemon,
+the CLI and a human's window can all work on the same profile at once.
+
 Tools: hutch_sessions, hutch_navigate, hutch_observe, hutch_interact,
 hutch_screenshot, hutch_page_state, hutch_network, hutch_cookies,
 hutch_intercept, hutch_evaluate, hutch_content, hutch_diff, hutch_pages,
@@ -62,6 +65,10 @@ def create_mcp_server():
             "proxy": s.proxy.server if s.proxy else None,
             "fingerprint": f"{s.fingerprint.viewport_width}x{s.fingerprint.viewport_height}",
             "tags": s.tags,
+            "launcher": s.launcher,
+            "browser": s.browser,
+            "owned": s._owned if s.is_alive else None,
+            "running": s.running,
         }
 
     def _json(obj) -> str:
@@ -82,15 +89,19 @@ def create_mcp_server():
             Tool(
                 name="hutch_sessions",
                 description=(
-                    "Manage browser sessions. Actions: list (default), "
-                    "create, close, destroy. Returns session info."
+                    "Manage browser sessions. Actions: list (default), create, close, destroy, "
+                    "attach (join a browser hutch did not start: target chrome|brave|edge|port|url), "
+                    "detach (disconnect, leave it running), headed / headless (relaunch the same "
+                    "profile on/off screen; tabs, cookies and sessionStorage carry over). "
+                    "A session the human opened with 'hutch browse' is joined automatically."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["list", "create", "close", "destroy"],
+                            "enum": ["list", "create", "close", "destroy",
+                                     "attach", "detach", "headed", "headless"],
                             "default": "list",
                             "description": "Operation to perform",
                         },
@@ -102,6 +113,14 @@ def create_mcp_server():
                             "type": "boolean",
                             "default": True,
                             "description": "Run headless (create only)",
+                        },
+                        "browser": {
+                            "type": "string",
+                            "description": "chromium (default) | chrome | brave | edge | path (create only)",
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "attach only: chrome | brave | edge | port | http://host:port | ws://...",
                         },
                         "proxy": {
                             "type": "string",
@@ -173,14 +192,17 @@ def create_mcp_server():
             Tool(
                 name="hutch_observe",
                 description=(
-                    "Dump interactive elements on the current page as an indexed "
-                    "list. Each entry has idx, tag, text, selector -- use idx or "
-                    "selector with hutch_interact to click/fill/type."
+                    "Accessibility snapshot of the current tab with refs like [ref=e12]. "
+                    "Pass a ref as the selector to hutch_interact. Refs are only valid "
+                    "until the page changes -- re-observe after navigation. mode=elements "
+                    "returns the legacy indexed element list instead."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "session": {"type": "string", "description": "Session name"},
+                        "mode": {"type": "string", "enum": ["aria", "elements"], "default": "aria"},
+                        "selector": {"type": "string", "description": "Limit the snapshot to this element (ref or CSS)"},
                     },
                     "required": ["session"],
                 },
@@ -207,7 +229,7 @@ def create_mcp_server():
                             ],
                             "description": "Interaction type",
                         },
-                        "selector": {"type": "string", "description": "CSS selector or element index from observe"},
+                        "selector": {"type": "string", "description": "Ref from hutch_observe (e12), CSS/Playwright selector, or legacy element index"},
                         "value": {"type": "string", "description": "Value for fill/type/select/press"},
                         "press_enter": {"type": "boolean", "default": False, "description": "Press Enter after fill"},
                         "delay": {"type": "integer", "default": 50, "description": "Typing delay in ms (type action)"},
@@ -519,8 +541,27 @@ def create_mcp_server():
                     ignore_https_errors=arguments.get("ignore_https_errors", False),
                     tags=arguments.get("tags", {}),
                     caido=arguments.get("caido", False),
+                    browser=arguments.get("browser") or "chromium",
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
+
+            if action in ("attach", "detach", "headed", "headless"):
+                sname = arguments.get("name")
+                if not sname:
+                    return [TextContent(type="text", text=f"error: 'name' is required for {action}")]
+                if action == "attach":
+                    if not arguments.get("target"):
+                        return [TextContent(type="text", text="error: 'target' is required for attach")]
+                    s = await pool.attach(sname, arguments["target"])
+                elif action == "detach":
+                    s = await pool.get(sname)
+                    await s.detach()
+                else:
+                    s = await pool.set_headless(sname, action == "headless")
+                info = _session_info(s)
+                if s.is_alive:
+                    info["tabs"] = await s.pages()
+                return [TextContent(type="text", text=_json(info))]
 
             if action == "close":
                 sname = arguments.get("name")
@@ -585,6 +626,10 @@ def create_mcp_server():
         # ------ hutch_observe
         if name == "hutch_observe":
             session = await _get_session(arguments["session"])
+            if arguments.get("mode", "aria") == "aria":
+                snap = await session.aria_snapshot(selector=arguments.get("selector"))
+                state = await _page_state(session)
+                return [TextContent(type="text", text=f"{state['url']} — {state['title']}\n{snap}")]
             elements = await session.observe()
             state = await _page_state(session)
             return [TextContent(type="text", text=_json({
@@ -710,7 +755,7 @@ def create_mcp_server():
                 page = session._active_page()
                 if page:
                     try:
-                        result["dom"] = await page.accessibility.snapshot()
+                        result["dom"] = await page.aria_snapshot(mode="ai")
                     except Exception:
                         result["dom"] = None
 

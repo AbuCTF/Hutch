@@ -53,7 +53,7 @@ class Snapshot:
     cursor: int
     timestamp: float
     cookies: list = field(default_factory=list)
-    dom: Optional[dict] = None
+    dom: Optional[str] = None
     screenshot: Optional[bytes] = None
     network: list = field(default_factory=list)
     console: list = field(default_factory=list)
@@ -72,6 +72,9 @@ class Diff:
     cookies_added: list = field(default_factory=list)
     cookies_removed: list = field(default_factory=list)
 
+
+_INTERNAL_SCHEMES = ("chrome://", "chrome-untrusted://", "chrome-extension://",
+                     "devtools://", "edge://", "brave://")
 
 _BODY_MAX = 65536
 _BODY_MAX_RESPONSE = 1_048_576  # 1 MB default for response body capture
@@ -187,6 +190,8 @@ class Context:
         page.on("framenavigated", self._on_navigation)
 
     def _on_request(self, request):
+        if request.url.startswith(_INTERNAL_SCHEMES):
+            return
         body = None
         try:
             body = request.post_data
@@ -207,6 +212,8 @@ class Context:
         self._pending[request] = entry
 
     async def _on_response(self, response):
+        if response.url.startswith(_INTERNAL_SCHEMES):
+            return
         entry = self._pending.pop(response.request, None)
         if not entry:
             entry = NetworkEntry(

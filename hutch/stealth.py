@@ -118,24 +118,7 @@ EVASION_SCRIPT = """
     };
   }
 
-  // 8. canvas fingerprint noise
-  const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function(type, quality) {
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const shift = ((Date.now() % 255) * 0.001);
-      const img = ctx.getImageData(0, 0, Math.min(this.width, 2), Math.min(this.height, 2));
-      if (img.data.length > 0) img.data[0] = (img.data[0] + shift) & 0xFF;
-      ctx.putImageData(img, 0, 0);
-    }
-    return _toDataURL.call(this, type, quality);
-  };
-
-  // 9. window.outerWidth/outerHeight — match inner + chrome frame
-  Object.defineProperty(window, 'outerWidth', {get: () => window.innerWidth + 0});
-  Object.defineProperty(window, 'outerHeight', {get: () => window.innerHeight + 85});
-
-  // 10. navigator.connection — headless sometimes lacks this
+  // 8. navigator.connection — headless sometimes lacks this
   if (!navigator.connection) {
     Object.defineProperty(navigator, 'connection', {get: () => ({
       downlink: 10, effectiveType: '4g', rtt: 50, saveData: false,
@@ -146,7 +129,7 @@ EVASION_SCRIPT = """
 """
 
 
-def _build_dynamic_script(fingerprint=None):
+def _build_dynamic_script(fingerprint=None, *, seed=0, headless=True):
     """Build fingerprint-specific overrides that depend on session config."""
     parts = []
 
@@ -169,17 +152,36 @@ def _build_dynamic_script(fingerprint=None):
     parts.append(f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{platform}'}});")
     parts.append(f"Object.defineProperty(navigator, 'languages', {{configurable: true, get: () => {languages}}});")
 
+    # stable per-session canvas noise, applied to a copy so repeated reads hash the same
+    parts.append(f"""
+const _seed = {seed & 0xFF};
+const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
+HTMLCanvasElement.prototype.toDataURL = function(...args) {{
+  if (!this.width || !this.height) return _toDataURL.apply(this, args);
+  const copy = document.createElement('canvas');
+  copy.width = this.width; copy.height = this.height;
+  const ctx = copy.getContext('2d');
+  ctx.drawImage(this, 0, 0);
+  const px = ctx.getImageData(0, 0, 1, 1);
+  px.data[2] ^= (_seed & 1) + 1;
+  ctx.putImageData(px, 0, 0);
+  return _toDataURL.apply(copy, args);
+}};""")
+    if headless:
+        parts.append("Object.defineProperty(window, 'outerWidth', {get: () => window.innerWidth});")
+        parts.append("Object.defineProperty(window, 'outerHeight', {get: () => window.innerHeight + 85});")
+
     return "(() => {\n" + "\n".join(parts) + "\n})();"
 
 
-async def apply_stealth(context, *, fingerprint=None):
+async def apply_stealth(context, *, fingerprint=None, seed=0, headless=True):
     """Apply comprehensive stealth evasions to a browser context.
 
     Always applies built-in evasions. Also applies playwright-stealth on top
     if the optional package is available.
     """
     await context.add_init_script(EVASION_SCRIPT)
-    await context.add_init_script(_build_dynamic_script(fingerprint))
+    await context.add_init_script(_build_dynamic_script(fingerprint, seed=seed, headless=headless))
 
     global _stealth_mod, _stealth_checked
     if not _stealth_checked:

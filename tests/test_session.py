@@ -16,6 +16,8 @@ class _FakeContext:
 
 
 class _FakeChromium:
+    executable_path = "/nonexistent/chrome"
+
     def __init__(self, context):
         self.context = context
 
@@ -34,7 +36,7 @@ async def test_launch_passes_public_fingerprint_to_stealth(tmp_path, monkeypatch
     context = _FakeContext()
     captured = {}
 
-    async def fake_apply_stealth(actual_context, *, fingerprint=None):
+    async def fake_apply_stealth(actual_context, *, fingerprint=None, **_):
         captured["context"] = actual_context
         captured["fingerprint"] = fingerprint
 
@@ -44,6 +46,7 @@ async def test_launch_passes_public_fingerprint_to_stealth(tmp_path, monkeypatch
         "fingerprint-regression",
         str(tmp_path / "profile"),
         fingerprint=fingerprint,
+        launcher="playwright",
     )
     session._start_watchdog = lambda: None
 
@@ -61,6 +64,7 @@ async def test_non_stealth_platform_override_is_configurable(tmp_path):
         str(tmp_path / "profile"),
         fingerprint=Fingerprint(platform="Linux x86_64"),
         stealth=False,
+        launcher="playwright",
     )
     session._start_watchdog = lambda: None
 
@@ -109,6 +113,7 @@ async def test_hyprland_viewport_tracks_scaled_tile(tmp_path, monkeypatch):
         str(tmp_path / "profile"),
         headless=False,
         stealth=False,
+        launcher="playwright",
     )
 
     client_samples = iter([
