@@ -5,6 +5,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -66,8 +67,8 @@ def test_vault_file_resolve_domains_and_redaction(vault):
     secrets.set_secret("token", "tok-123456")
     if sys.platform != "win32":
         assert stat.S_IMODE(os.stat(vault).st_mode) == 0o600
-    assert secrets.listing() == [{"name": "pw", "domains": ["example.com"]},
-                                 {"name": "token", "domains": []}]
+    assert secrets.listing() == [{"name": "pw", "domains": ["example.com"], "kind": "secret"},
+                                 {"name": "token", "domains": [], "kind": "secret"}]
     assert secrets.resolve("{{pw}}", "https://login.example.com/x") == 'hunter"2'
     assert secrets.resolve("Bearer {{ token }}", "http://anything") == "Bearer tok-123456"
     with pytest.raises(secrets.SecretError, match="not allowed on evil.com"):
@@ -166,3 +167,65 @@ def test_cli_secret_commands(tmp_path):
     assert "tok" not in run("secret", "list").stdout
     assert run("secret", "rm", "gh").returncode == 0
     assert run("secret", "rm", "gh").stderr.startswith("hutch: no secret")
+
+
+def test_totp_secret_matches_rfc6238_and_resolves_to_the_current_code():
+    secrets.set_totp("ywh", "otpauth://totp/YesWeHack:abu?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8",
+                     ["yeswehack.com"])
+    entry = json.load(open(secrets.path()))["ywh"]
+    assert entry["kind"] == "totp" and entry["label"] == "YesWeHack:abu"
+    assert secrets.totp(entry, 59) == "94287082" and secrets.totp(entry, 1111111109) == "07081804"
+    code, left = secrets.code("ywh")
+    assert len(code) == 8 and 0 < left <= 30
+    assert secrets.resolve("{{ywh}}", "https://yeswehack.com/auth") in (code, secrets.totp(entry, time.time() + 30))
+    assert secrets.placeholder_for(code) == "{{ywh}}"
+    assert secrets.listing()[0]["kind"] == "totp"
+    with pytest.raises(secrets.SecretError, match="base32"):
+        secrets.set_totp("bad", "not base32!")
+
+
+_OTP = b"""<title>otp</title>
+<form action="/check"><input name=code autocomplete=one-time-code><button>Verify</button></form>"""
+
+
+@pytest.mark.asyncio
+async def test_recorded_otp_login_replays_with_a_fresh_code(base, tmp_path):
+    secrets.set_totp("otp", "JBSWY3DPEHPK3PXP")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            if self.path.startswith("/check"):
+                sent = parse_qs(urlparse(self.path).query).get("code", [""])[0]
+                ok = sent == secrets.code("otp")[0] or sent == secrets.totp(
+                    json.load(open(secrets.path()))["otp"], time.time() - 30)
+                self.wfile.write(b"<title>%s</title>" % (b"in" if ok else b"rejected"))
+            else:
+                self.wfile.write(_OTP)
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/"
+    try:
+        async with Pool(base_dir=base) as pool:
+            s = await pool.create("otp", headless=True)
+            await s.goto(url)
+            await s.start_recording()
+            page = s._active_page()
+            await page.fill("input[name=code]", secrets.code("otp")[0])
+            await page.click("button")
+            await page.wait_for_url("**/check**")
+            rec = s.stop_recording()
+            assert rec["steps"][0]["value"] == "{{otp}}"
+            assert secrets.code("otp")[0] not in json.dumps(rec)
+
+            await s.goto(url)
+            result = await s.replay(rec)
+            assert result["ok"] and await page.title() == "in"
+    finally:
+        httpd.shutdown()

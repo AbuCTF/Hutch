@@ -641,6 +641,16 @@ class HutchClient:
         await self._call("session", {"name": name})
         return SessionHandle(self, name)
 
+    async def authz(self, owner, identities, request, *, anonymous=True, unsafe=False):
+        return await self._call("authz", {"owner": owner, "identities": identities, "request": request,
+                                          "anonymous": anonymous, "unsafe": unsafe})
+
+    async def authz_scan(self, owner, identities, *, since=0, host=None, anonymous=True,
+                         unsafe=False, limit=40):
+        return (await self._call("authz_scan", {
+            "owner": owner, "identities": identities, "since": since, "host": host,
+            "anonymous": anonymous, "unsafe": unsafe, "limit": limit}))["reports"]
+
     async def commands(self, command=None):
         return (await self._call("commands", {"command": command}))["commands"]
 

@@ -296,6 +296,7 @@ class Session:
         self._playwright = None
         self._focus = None
         self._close_callbacks = []
+        self.auth = None
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -331,6 +332,7 @@ class Session:
             "headless": self.headless,
             "ignore_https_errors": self.ignore_https_errors,
             "tags": self.tags,
+            "auth": self.auth,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -385,6 +387,9 @@ class Session:
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
+        if meta.get("auth"):
+            s.auth = meta["auth"]
+            s._save_meta()
         return s
 
     def _window_class(self):
@@ -1185,6 +1190,61 @@ class Session:
             await getattr(page, a)(sel, timeout=timeout)
         elif a == "upload":
             raise RuntimeError(f"upload step needs files: {step.get('files')}")
+
+    # --- login health ---
+
+    def set_auth(self, probe, *, expect=None, login=None):
+        """How to tell this identity is logged in: probe is a url only a logged-in user gets
+        (e.g. /api/me), expect optional text it must contain, login a recording that logs in."""
+        self.auth = {"probe": probe, "expect": expect,
+                     "login": os.path.abspath(login) if login else None, "last": None}
+        self._save_meta()
+        return self.auth
+
+    async def auth_check(self):
+        """'in', 'out' or 'unknown', from one request with this identity's cookies; tabs are not touched."""
+        if not self.auth or not self.auth.get("probe"):
+            raise RuntimeError(f"no login probe for '{self.name}', set one with set_auth")
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        from .authz import _AUTH_HEADER, _send
+        probe = self.auth["probe"]
+        r = await _send(self._playwright, self, {"method": "GET", "url": probe, "headers": {}})
+        expect, location = self.auth.get("expect"), (r.get("location") or "").lower()
+        if r.get("error"):
+            state, reason = "unknown", r["error"]
+        elif r["status"] in (401, 403, 419, 440):
+            state, reason = "out", f"{r['status']} from the probe"
+        elif 300 <= r["status"] < 400:
+            out = _AUTH_HEADER.search(location) or any(w in location for w in ("login", "signin", "sign-in"))
+            state, reason = ("out" if out else "unknown"), f"{r['status']} to {location or '?'}"
+        elif r["status"] >= 400:
+            state, reason = "unknown", f"{r['status']} from the probe"
+        elif expect and expect not in r["body"]:
+            state, reason = "out", f"'{expect}' missing from the probe"
+        else:
+            state, reason = "in", f"{r['status']} from the probe"
+        self.auth["last"] = {"state": state, "reason": reason, "at": time.time()}
+        self._save_meta()
+        self.events.emit("auth", state=state, reason=reason)
+        return self.auth["last"]
+
+    async def keep_alive(self):
+        """Check the login and, when it lapsed, replay the login recording in a spare tab."""
+        last = await self.auth_check()
+        if last["state"] != "out" or not self.auth.get("login"):
+            return {**last, "relogin": None}
+        page = await self._context.new_page()
+        focus = self._focus
+        self._focus = page
+        try:
+            result = await self.replay(self.auth["login"])
+        finally:
+            self._focus = focus
+            with contextlib.suppress(Exception):
+                await page.close()
+        after = await self.auth_check()
+        return {**after, "relogin": result}
 
     def arm_dialog(self, accept=True, text=None):
         """Answer the next dialog on an agent tab this way (once), instead of the policy."""

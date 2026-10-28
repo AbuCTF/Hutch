@@ -98,7 +98,19 @@
 - [x] "agent" badge on leased tabs in a visible browser (closed shadow root, aria-hidden, no pointer
       events), re-added on load while held, hidden during the agent's screenshots, removed on release
 
+### v0.20.0 — done
+
+- [x] `authz`: replay a request as the owner, other identities and nobody (own cookies, learned auth
+      headers, session proxy), verdicts bypassed / enforced / public / check; scan of captured traffic;
+      `--caido ID`; safe methods only unless unsafe; MCP `hutch_authz`, daemon, client
+- [x] TOTP secrets (`--totp`, otpauth:// or base32, RFC 6238 verified), `hutch secret code`, recorded
+      codes become placeholders so 2FA logins replay
+- [x] login health: `set_auth` probe / expect / login recording, `auth_check` from one request,
+      `keep_alive` relogs in a spare tab, `auth` events, `hutch auth`
+
 ### Next
+
+- [ ] TelOS: identities health on the dashboard, `hutch_authz` as a capability, TOTP via the vault
 
 
 ---

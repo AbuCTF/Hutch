@@ -365,20 +365,30 @@ async def cmd_secret(_pool, args):
                 raise SystemExit("hutch: give a secret name")
             if sys.stdin.isatty():
                 import getpass
-                value = getpass.getpass(f"{args.name}: ")
+                prompt = "otpauth:// uri or base32 secret" if args.totp else args.name
+                value = getpass.getpass(f"{prompt}: ")
             else:
-                value = sys.stdin.read().rstrip("\n")
+                value = sys.stdin.read().strip()
             if not value:
                 raise SystemExit("hutch: empty value")
-            secrets.set_secret(args.name, value, args.domain)
-            print(f"saved: {args.name}")
+            if args.totp:
+                secrets.set_totp(args.name, value, args.domain)
+                code, left = secrets.code(args.name)
+                print(f"saved: {args.name}, current code {code} ({left}s)")
+            else:
+                secrets.set_secret(args.name, value, args.domain)
+                print(f"saved: {args.name}")
+        elif args.action == "code":
+            code, left = secrets.code(args.name)
+            print(f"{code}  {left}s")
         elif args.action == "rm":
             secrets.remove(args.name)
             print(f"removed: {args.name}")
         else:
             rows = secrets.listing()
             for r in rows:
-                print(f"{r['name']:<24} {', '.join(r['domains']) or 'any site'}")
+                kind = "totp " if r["kind"] == "totp" else ""
+                print(f"{r['name']:<24} {kind}{', '.join(r['domains']) or 'any site'}")
             if not rows:
                 print("no secrets")
     except secrets.SecretError as e:
@@ -434,6 +444,66 @@ async def cmd_replay(pool, args):
         failed = result["failed"] or {}
         raise SystemExit(f"hutch: step {result['done'] + 1} {failed.get('action')} "
                          f"{failed.get('selector') or failed.get('url') or ''} failed: {result['error']}")
+
+
+async def cmd_authz(pool, args):
+    from . import authz
+    if args.caido is not None:
+        from .caido import CaidoClient, CaidoConfig
+        async with CaidoClient(CaidoConfig()) as caido:
+            found = await caido.get_request(args.caido) or {}
+        raw = found.get("raw", "")
+        if raw and not raw.lstrip().split(" ", 1)[0].isalpha():
+            import base64
+            raw = base64.b64decode(raw).decode("utf-8", "replace")
+        if not raw:
+            raise SystemExit(f"hutch: no caido request {args.caido}")
+        request = authz.parse_raw(raw, "https" if found.get("isTls", True) else "http")
+    elif args.url:
+        headers = dict(h.split(":", 1) for h in args.header)
+        request = {"method": args.method.upper(), "url": args.url,
+                   "headers": {k.strip(): v.strip() for k, v in headers.items()}, "body": args.data}
+    else:
+        raise SystemExit("hutch: give --url or --caido")
+    for name in [args.owner] + args.identities:
+        _running(argparse.Namespace(**{**vars(args), "name": name}), headless=True)
+    report = await pool.authz(args.owner, args.identities, request,
+                              anonymous=not args.no_anon, unsafe=args.unsafe)
+    print(json.dumps(report, indent=2) if args.json else authz.format_reports([report]))
+
+
+async def cmd_auth(pool, args):
+    import time
+    if args.probe:
+        s = _load(args, args.name)
+        s.set_auth(args.probe, expect=args.expect, login=args.login)
+        print(f"{s.name}: probe {args.probe}" + (f", login {args.login}" if args.login else ""))
+        return
+    names = [args.name] if args.name else [n for n, s in _profiles(args).items() if s.auth]
+    if not names:
+        print("no login probes, set one: hutch auth <name> --probe URL")
+        return
+    rows = []
+    for name in names:
+        s = _load(args, name)
+        if not s.auth:
+            raise SystemExit(f"hutch: no login probe for {name}, set one with --probe")
+        if args.name or browser.status(s.profile_dir):
+            if args.name:
+                _running(args, headless=True)
+            s = await pool.get(name, launch=True)
+            result = await (s.keep_alive() if args.keep else s.auth_check())
+            if result.get("relogin"):
+                ok = result["relogin"]["ok"]
+                result["reason"] += ", relogged in" if ok else f", relogin failed: {result['relogin']['error']}"
+        else:
+            result = s.auth.get("last") or {"state": "unknown", "reason": "not running", "at": None}
+        ago = f"{int(time.time() - result['at'])}s ago" if result.get("at") else "-"
+        rows.append((name, result["state"], ago, result["reason"]))
+    fmt = "{:<20} {:<8} {:<10} {}"
+    print(fmt.format("NAME", "LOGIN", "CHECKED", "DETAIL"))
+    for r in rows:
+        print(fmt.format(_truncate(r[0], 20), *r[1:]))
 
 
 async def cmd_export(_pool, args):
@@ -641,7 +711,7 @@ async def _run(args):
         sys.exit(1)
 
 
-_POOL_COMMANDS = {"screenshot", "call", "record", "replay"}
+_POOL_COMMANDS = {"screenshot", "call", "record", "replay", "authz", "auth"}
 
 
 def main():
@@ -669,7 +739,9 @@ def main():
             "  record <name>         record what happens in the browser until Ctrl+C\n"
             "  replay <name> <file>  run a recording again\n"
             "  export <file>         recording as a standalone playwright script\n"
-            "  secret set|list|rm    values agents type as {{name}} but never see\n"
+            "  authz <owner> <as...> replay a request as other accounts and logged out\n"
+            "  auth [name]           is each identity still logged in; --keep logs back in\n"
+            "  secret set|list|rm|code  values agents type as {{name}} but never see, totp codes\n"
             "  tabs <name|target>    list open tabs\n"
             "  ps                    running browsers and memory\n"
             "  stop <name>|--all     close a browser, keep the profile\n"
@@ -750,12 +822,6 @@ def main():
     _common(c)
     c.set_defaults(func=cmd_login)
 
-    c = _sub("auth")
-    c.add_argument("name", help="session name")
-    c.add_argument("--url", default="https://accounts.google.com/", help="sign-in page")
-    _common(c)
-    c.set_defaults(func=cmd_login)
-
     c = _sub("headed")
     c.add_argument("name", help="session name")
     c.set_defaults(func=cmd_headed)
@@ -777,9 +843,10 @@ def main():
     c.set_defaults(func=cmd_tabs)
 
     c = _sub("secret")
-    c.add_argument("action", choices=["set", "list", "rm"])
+    c.add_argument("action", choices=["set", "list", "rm", "code"])
     c.add_argument("name", nargs="?", help="secret name, typed as {{name}}")
     c.add_argument("--domain", action="append", metavar="HOST", help="only type it on this site, repeatable")
+    c.add_argument("--totp", action="store_true", help="an authenticator secret; {{name}} types the current code")
     c.set_defaults(func=cmd_secret)
 
     c = _sub("record")
@@ -792,6 +859,27 @@ def main():
     c.add_argument("file", help="recording file")
     c.add_argument("--headed", action="store_true", help="start the browser with a window")
     c.set_defaults(func=cmd_replay)
+
+    c = _sub("auth")
+    c.add_argument("name", nargs="?", help="session; omit to check every running one with a probe")
+    c.add_argument("--probe", metavar="URL", help="a url only a logged-in user gets, e.g. /api/me")
+    c.add_argument("--expect", metavar="TEXT", help="text the probe answer must contain")
+    c.add_argument("--login", metavar="FILE", help="recording that logs in (hutch record)")
+    c.add_argument("--keep", action="store_true", help="log in again with the recording if logged out")
+    c.set_defaults(func=cmd_auth)
+
+    c = _sub("authz")
+    c.add_argument("owner", help="session the request belongs to")
+    c.add_argument("identities", nargs="*", help="other logged-in sessions to replay it as")
+    c.add_argument("--url", help="request url")
+    c.add_argument("-X", "--method", default="GET")
+    c.add_argument("-H", "--header", action="append", default=[], metavar="'K: V'")
+    c.add_argument("-d", "--data", help="request body")
+    c.add_argument("--caido", metavar="ID", help="replay this request from caido history")
+    c.add_argument("--no-anon", action="store_true", help="skip the logged-out replay")
+    c.add_argument("--unsafe", action="store_true", help="allow methods that change state")
+    c.add_argument("--json", action="store_true")
+    c.set_defaults(func=cmd_authz)
 
     c = _sub("export")
     c.add_argument("file", help="recording file")

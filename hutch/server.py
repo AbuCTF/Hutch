@@ -215,6 +215,8 @@ class HutchDaemon:
             "alerts": self._rpc_alerts,
             "parallel_goto": self._rpc_parallel_goto,
             "compare": self._rpc_compare,
+            "authz": self._rpc_authz,
+            "authz_scan": self._rpc_authz_scan,
             "diff_responses": self._rpc_diff_responses,
             "pause": self._rpc_pause,
             "resume": self._rpc_resume,
@@ -563,6 +565,17 @@ class HutchDaemon:
         url = params["url"]
         return await self.pool.compare(
             names, url, wait_until=params.get("wait_until", "load"))
+
+    async def _rpc_authz(self, params):
+        return await self.pool.authz(params["owner"], params.get("identities", []), params["request"],
+                                     anonymous=params.get("anonymous", True),
+                                     unsafe=params.get("unsafe", False))
+
+    async def _rpc_authz_scan(self, params):
+        return {"reports": await self.pool.authz_scan(
+            params["owner"], params.get("identities", []), since=params.get("since", 0),
+            host=params.get("host"), anonymous=params.get("anonymous", True),
+            unsafe=params.get("unsafe", False), limit=params.get("limit", 40))}
 
     async def _rpc_diff_responses(self, params):
         name_a = params["session_a"]

@@ -1,9 +1,14 @@
 """Secrets agents can type but never read: {{name}} placeholders, bound to domains, redacted from output."""
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
-from urllib.parse import urlparse
+import struct
+import time
+from urllib.parse import parse_qs, unquote, urlparse
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
 
@@ -42,6 +47,65 @@ def set_secret(name, value, domains=None):
     _save(data)
 
 
+def set_totp(name, secret, domains=None):
+    """Store an authenticator secret: base32, or an otpauth://totp/ URI from the QR code."""
+    params = {"digits": 6, "period": 30, "algorithm": "SHA1"}
+    if secret.startswith("otpauth://"):
+        u = urlparse(secret)
+        if u.netloc != "totp":
+            raise SecretError("only otpauth://totp/ is supported")
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        secret = q.get("secret", "")
+        params.update({"digits": int(q.get("digits", 6)), "period": int(q.get("period", 30)),
+                       "algorithm": q.get("algorithm", "SHA1").upper(), "label": unquote(u.path.lstrip("/"))})
+    secret = secret.replace(" ", "").upper()
+    try:
+        _b32(secret)
+    except ValueError:
+        raise SecretError("not a base32 secret or otpauth:// uri") from None
+    if params["algorithm"] not in ("SHA1", "SHA256", "SHA512"):
+        raise SecretError(f"unsupported algorithm {params['algorithm']}")
+    set_secret(name, secret, domains)
+    data = _load()
+    data[name].update(kind="totp", **params)
+    _save(data)
+
+
+def _b32(secret):
+    return base64.b32decode(secret + "=" * (-len(secret) % 8))
+
+
+def totp(entry, at=None):
+    """The current code for a totp entry (RFC 6238)."""
+    period = entry.get("period", 30)
+    counter = int((time.time() if at is None else at) // period)
+    digest = hmac.new(_b32(entry["value"]), struct.pack(">Q", counter),
+                      getattr(hashlib, entry.get("algorithm", "SHA1").lower())).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(value % 10 ** entry.get("digits", 6)).zfill(entry.get("digits", 6))
+
+
+def code(name):
+    """(code, seconds left) for a totp secret."""
+    entry = _load().get(name)
+    if not entry or entry.get("kind") != "totp":
+        raise SecretError(f"no totp secret named '{name}'")
+    period = entry.get("period", 30)
+    return totp(entry), period - int(time.time()) % period
+
+
+def _value(entry):
+    if entry.get("kind") != "totp":
+        return entry["value"]
+    period = entry.get("period", 30)
+    left = period - time.time() % period
+    if left < 2:
+        # a code about to roll over would be stale by the time the form is submitted
+        time.sleep(left + 0.1)
+    return totp(entry)
+
+
 def remove(name):
     data = _load()
     if data.pop(name, None) is None:
@@ -50,7 +114,8 @@ def remove(name):
 
 
 def listing():
-    return [{"name": k, "domains": v.get("domains", [])} for k, v in sorted(_load().items())]
+    return [{"name": k, "domains": v.get("domains", []), "kind": v.get("kind", "secret")}
+            for k, v in sorted(_load().items())]
 
 
 def _allowed(domains, url):
@@ -73,13 +138,19 @@ def resolve(text, url):
         if not _allowed(entry.get("domains"), url):
             host = urlparse(url).hostname or url
             raise SecretError(f"secret '{m.group(1)}' is not allowed on {host}")
-        return entry["value"]
+        return _value(entry)
     return _PLACEHOLDER.sub(sub, text)
 
 
 def placeholder_for(value):
+    """The placeholder for a typed value: a stored secret, or the current code of a totp secret."""
+    now = time.time()
     for name, entry in _load().items():
-        if entry["value"] == value:
+        if entry.get("kind") == "totp":
+            period = entry.get("period", 30)
+            if value and value in (totp(entry, now), totp(entry, now - period)):
+                return "{{" + name + "}}"
+        elif entry["value"] == value:
             return "{{" + name + "}}"
     return None
 

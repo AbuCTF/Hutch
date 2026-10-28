@@ -251,6 +251,15 @@ class Pool:
             entries_a, entries_b, name_a, name_b,
             url_pattern=url_pattern, ignore_noise=ignore_noise)
 
+    async def authz(self, owner, identities, request, *, anonymous=True, unsafe=False):
+        """Replay owner's request as each identity and as nobody; see hutch.authz.replay."""
+        from . import authz
+        return await authz.replay(self, owner, identities, request, anonymous=anonymous, unsafe=unsafe)
+
+    async def authz_scan(self, owner, identities, **kw):
+        from . import authz
+        return await authz.scan(self, owner, identities, **kw)
+
     def list(self, *, alive_only=False, tag=None):
         sessions = list(self._sessions.values())
         if alive_only:

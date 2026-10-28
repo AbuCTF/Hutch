@@ -93,17 +93,44 @@ hutch call bb-acme evaluate "document.cookie"
 hutch call bb-acme set_cookies cookies:='[{"name": "a", "value": "1", "url": "https://acme.com"}]'
 ```
 
+#### Several accounts
+
+One session per account, each logged in once. `authz` replays a request as the owner, as every
+other account and as nobody, and says which ones got the owner's answer.
+
+```bash
+hutch authz acme-alice acme-bob --url https://api.acme.com/orders/1042
+hutch authz acme-alice acme-bob --caido 5123        # any request from caido history
+```
+
+- `bypassed`: another account got the owner's answer, likely IDOR / broken access control
+- `enforced`: denied, redirected away or not found; `public`: logged out gets it too
+- `check`: answered differently, only a human can judge (often per-user data on a shared endpoint)
+- each identity sends its own cookies and the auth headers it last used on that host, through the
+  session's proxy so every replay lands in caido; only GET/HEAD/OPTIONS unless `--unsafe`
+- agents: `hutch_authz` replays one request or scans everything the owner captured
+
+```bash
+hutch auth acme-alice --probe https://api.acme.com/me --login alice-login.json
+hutch auth                                          # every identity: in / out, from one request
+hutch auth acme-alice --keep                        # logged out: replay the login, TOTP included
+```
+
 #### Secrets, record and replay
 
 ```bash
 hutch secret set acme-pass --domain acme.com     # prompted, stored 0600 in ~/.hutch/secrets.json
 hutch call bb-acme fill "#password" "{{acme-pass}}"
+hutch secret set ywh-otp --totp --domain yeswehack.com   # otpauth:// uri or base32 from the 2FA setup
+hutch secret code ywh-otp                        # current code; agents type {{ywh-otp}}
 hutch record bb-acme -o login.json               # do it in the window, Ctrl+C to stop
 hutch replay bb-acme login.json
 hutch export login.json > login.py               # standalone playwright, secrets from HUTCH_SECRET_<NAME>
 ```
 
 - agents type `{{name}}` in fill/type; the value never appears in MCP or daemon output, even via `evaluate`
+- a TOTP secret types its current code (waiting out the last two seconds of a window); a code typed
+  by hand while recording is saved as the placeholder, so a recorded 2FA login replays by itself
 - a secret bound to domains is refused on any other site, so a prompt-injected agent cannot type it elsewhere
 - recordings come from real DOM events, so a human in the window and an agent are recorded the same way;
   passwords become `{{password}}` (or the vault name) and are scrubbed from recorded URLs

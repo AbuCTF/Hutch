@@ -530,6 +530,36 @@ def create_mcp_server():
                 },
             ),
             Tool(
+                name="hutch_authz",
+                description=(
+                    "Access-control test across logged-in identities (one hutch session per account). "
+                    "replay: send one request as the owner, as every identity in 'as' and as nobody, "
+                    "and classify each: bypassed (same answer as the owner, likely IDOR / broken "
+                    "access control), enforced (denied, redirected, not found), check (differs, judge it). "
+                    "Give the request by 'seq' from hutch_network, or method+url(+headers, body). "
+                    "scan: replay every API/page request the owner captured since 'since'. Only "
+                    "GET/HEAD/OPTIONS unless unsafe=true, because replays repeat side effects."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["replay", "scan"], "default": "replay"},
+                        "owner": {"type": "string", "description": "Session whose request it is"},
+                        "as": {"type": "array", "items": {"type": "string"}, "description": "Other identity sessions"},
+                        "seq": {"type": "integer", "description": "Request seq from the owner's capture"},
+                        "method": {"type": "string", "default": "GET"},
+                        "url": {"type": "string"},
+                        "headers": {"type": "object"},
+                        "body": {"type": "string"},
+                        "since": {"type": "integer", "default": 0},
+                        "host": {"type": "string", "description": "Limit scan to this host"},
+                        "anonymous": {"type": "boolean", "default": True},
+                        "unsafe": {"type": "boolean", "default": False},
+                    },
+                    "required": ["owner"],
+                },
+            ),
+            Tool(
                 name="hutch_call",
                 description=(
                     "Run any session command by name when no dedicated hutch tool covers it: "
@@ -1095,6 +1125,30 @@ def create_mcp_server():
             return [TextContent(type="text", text=_json(pool.status()))]
 
         # ------ hutch_auth
+        if name == "hutch_authz":
+            from hutch import authz
+            pool = await _get_pool()
+            owner, others = arguments["owner"], arguments.get("as") or []
+            opts = {"anonymous": arguments.get("anonymous", True), "unsafe": arguments.get("unsafe", False)}
+            if arguments.get("action") == "scan":
+                reports = await pool.authz_scan(owner, others, since=arguments.get("since", 0),
+                                                host=arguments.get("host"), **opts)
+                return [TextContent(type="text", text=authz.format_reports(reports))]
+            if arguments.get("seq") is not None:
+                s = await pool.get(owner, launch=True)
+                e = next((e for e in s.context.network.all() if e.seq == arguments["seq"]), None)
+                if e is None:
+                    return [TextContent(type="text", text=f"error: no request #{arguments['seq']} in {owner}'s capture")]
+                request = {"method": e.method, "url": e.url, "headers": e.request_headers or {},
+                           "body": e.request_body}
+            elif arguments.get("url"):
+                request = {"method": arguments.get("method", "GET").upper(), "url": arguments["url"],
+                           "headers": arguments.get("headers") or {}, "body": arguments.get("body")}
+            else:
+                return [TextContent(type="text", text="error: give 'seq' or 'url'")]
+            report = await pool.authz(owner, others, request, **opts)
+            return [TextContent(type="text", text=authz.format_reports([report]))]
+
         if name == "hutch_call":
             from hutch import commands
             command = arguments.get("command") or "help"
