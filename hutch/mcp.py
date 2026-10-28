@@ -468,8 +468,9 @@ def create_mcp_server():
             Tool(
                 name="hutch_pages",
                 description=(
-                    "Manage browser tabs. Actions: list, switch (by index), "
-                    "close (by index), new (open blank tab)."
+                    "Manage browser tabs. Actions: list (shows which tabs you or another agent "
+                    "hold), switch (by index), close (by index), new (open blank tab), release "
+                    "(let other agents drive a tab you hold). Tabs another agent holds are skipped."
                 ),
                 inputSchema={
                     "type": "object",
@@ -477,7 +478,7 @@ def create_mcp_server():
                         "session": {"type": "string", "description": "Session name"},
                         "action": {
                             "type": "string",
-                            "enum": ["list", "switch", "close", "new"],
+                            "enum": ["list", "switch", "close", "new", "release"],
                             "default": "list",
                         },
                         "index": {"type": "integer", "description": "Tab index (switch/close actions)"},
@@ -1067,6 +1068,9 @@ def create_mcp_server():
                 index = arguments.get("index")
                 result = await session.close_page(index)
                 return [TextContent(type="text", text=_json(result or {"closed": True}))]
+
+            if action == "release":
+                return [TextContent(type="text", text=_json(session.release_tab(arguments.get("index"))))]
 
             if action == "new":
                 page = await session.new_page()

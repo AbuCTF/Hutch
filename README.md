@@ -62,6 +62,8 @@ hutch gc --dry-run --caches            # what old artifacts, downloads and cache
 - `browse` again restores the last tabs, including session cookies and sessionStorage
 - agents (MCP, daemon, python) join a running session over CDP and work in their own tab
 - an agent that starts a stopped profile starts it headless; `view` shows what it is doing
+- a tab an agent drives is leased to it, so a second agent works in another tab instead of fighting
+  over it; in a visible browser those tabs carry a small "agent" badge (not in snapshots or screenshots)
 - `--browser chrome|brave|edge|/path` per profile; a profile stays on the browser it was made with
 - `HUTCH_BASE_DIR` switches the profile root
 - captured response bodies are capped at 64 MB per session (`HUTCH_CAPTURE_MB`; the oldest bodies go

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -45,6 +46,21 @@ _ANNOTATE_JS = """items => {
   document.documentElement.append(root);
 }"""
 
+
+_BADGE_JS = """(() => {
+  if (window.top !== window || document.getElementById("__hutch_agent")) return;
+  const add = () => {
+    const host = document.createElement("div");
+    host.id = "__hutch_agent";
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = "position:fixed;top:6px;right:6px;z-index:2147483647;pointer-events:none";
+    host.attachShadow({mode: "closed"}).innerHTML =
+      '<div style="font:600 11px/1 system-ui,sans-serif;color:#fff;background:#8e4ec6;padding:4px 7px;' +
+      'border-radius:10px;box-shadow:0 1px 4px #0005;opacity:.9">agent</div>';
+    document.documentElement.append(host);
+  };
+  document.documentElement ? add() : addEventListener("DOMContentLoaded", add);
+})()"""
 
 class SessionState(Enum):
     ACTIVE = "active"
@@ -264,6 +280,8 @@ class Session:
         self._recording = None
         self._recorder_installed = False
         self._front = None
+        self._owner = f"{os.getpid()}-{os.urandom(3).hex()}"
+        self._leased = {}
         self._file_chooser = None
         self._downloads = {}
         self._browser_cdp = None
@@ -550,6 +568,7 @@ class Session:
         self._pages = self._context.pages[:]
         for page in self._pages:
             self._setup_page(page)
+        await asyncio.gather(*(self._remember_target(p) for p in self._pages))
         # apply the UA/client-hint override to initial pages NOW (awaited) so the first
         # request carries the right sec-ch-ua, not racing the ensure_future in _setup_page.
         if self._spoof and self.fingerprint.user_agent:
@@ -738,7 +757,8 @@ class Session:
         page.on("popup", lambda popup, opener=page: self._follow_popup(opener, popup))
         page.on("crash", lambda p: self.events.emit("crash", tab=self._tab(p), url=p.url))
         page.on("framenavigated", self._on_navigated)
-        page.on("close", lambda _: self._on_page_closed())
+        page.on("close", lambda p: self._on_page_closed(p))
+        page.on("domcontentloaded", lambda p: self._remark(p))
         if self.headless:
             self._claim(page)
         asyncio.ensure_future(self._remember_target(page))
@@ -986,7 +1006,10 @@ class Session:
         self._last_activity = time.time()
         return page
 
-    def _on_page_closed(self):
+    def _on_page_closed(self, page=None):
+        tid = self._target_ids.get(page) if page is not None else None
+        if tid:
+            self._release(tid)
         # playwright-launched windows linger with zero tabs; native chromium exits by itself
         if (self.launcher == "playwright" and not self.headless and not self._closing
                 and self._context and not any(not p.is_closed() for p in self._pages)):
@@ -1175,12 +1198,100 @@ class Session:
         """
         if not self._context:
             return None
-        if self._focus is not None and not self._focus.is_closed():
-            return self._focus
-        if self._front is not None and not self._front.is_closed():
-            return self._front
         pages = [p for p in self._pages if not p.is_closed()]
-        return pages[-1] if pages else None
+        for page in [self._focus, self._front] + pages[::-1]:
+            if page is not None and not page.is_closed() and self._lease(page):
+                return page
+        return None
+
+    # --- tab leases: one agent drives a tab at a time, across processes ---
+
+    def _lease_file(self, tid):
+        return os.path.join(self.profile_dir, "hutch_leases", tid)
+
+    def _holder(self, tid):
+        """'me', another live owner's lease, or None when the tab is free."""
+        try:
+            with open(self._lease_file(tid)) as f:
+                lease = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if lease.get("owner") == self._owner:
+            return "me"
+        return lease if _browser._pid_alive(lease.get("pid")) else None
+
+    def _lease(self, page):
+        """Take the tab unless another agent holds it; the human's tabs are read without a lease."""
+        tid = self._target_ids.get(page)
+        if tid is None or not self._is_agent_page(page):
+            return True
+        if tid in self._leased:
+            return True
+        holder = self._holder(tid)
+        if holder and holder != "me":
+            return False
+        path = self._lease_file(tid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if holder is None:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return self._holder(tid) == "me"
+        with os.fdopen(fd, "w") as f:
+            json.dump({"owner": self._owner, "pid": os.getpid(), "session": self.name,
+                       "since": time.time()}, f)
+        self._leased[tid] = page
+        if not self.headless:
+            asyncio.ensure_future(self._mark(page, True))
+        return True
+
+    def _release(self, tid):
+        page = self._leased.pop(tid, None)
+        if self._holder(tid) == "me":
+            with contextlib.suppress(OSError):
+                os.remove(self._lease_file(tid))
+        if page is not None and not page.is_closed() and not self.headless:
+            asyncio.ensure_future(self._mark(page, False))
+
+    def _release_all(self):
+        for tid in list(self._leased):
+            self._release(tid)
+
+    async def _mark(self, page, on):
+        """A small badge on tabs an agent drives, so the human can tell them apart."""
+        with contextlib.suppress(Exception):
+            if on:
+                await page.evaluate(_BADGE_JS)
+            else:
+                await page.evaluate("document.getElementById('__hutch_agent')?.remove()")
+
+    def _remark(self, page):
+        if not self.headless and page in self._leased.values():
+            asyncio.ensure_future(self._mark(page, True))
+
+    async def _unmarked(self, page, shoot):
+        """Run a screenshot without the badge in it."""
+        marked = not self.headless and page in self._leased.values()
+        if marked:
+            await self._mark(page, False)
+        try:
+            return await shoot()
+        finally:
+            if marked:
+                await self._mark(page, True)
+
+    def release_tab(self, index=None):
+        """Let other agents drive this tab (the active one by default)."""
+        pages = [p for p in self._pages if not p.is_closed()]
+        page = pages[index] if index is not None else self._active_page()
+        tid = self._target_ids.get(page) if page else None
+        if tid:
+            self._release(tid)
+            if self._focus is page:
+                self._focus = None
+        return {"released": tid is not None}
 
     async def _find_front(self):
         """Remember the tab in front (restored sessions do not list it last)."""
@@ -1437,7 +1548,7 @@ class Session:
         page = self._active_page()
         if page:
             try:
-                return await page.screenshot(**kwargs)
+                return await self._unmarked(page, lambda: page.screenshot(**kwargs))
             except Exception as exc:
                 if not _is_disconnect(exc):
                     raise
@@ -1515,7 +1626,7 @@ class Session:
                  if b["x"] < size[0] and b["y"] < size[1] and b["x"] + b["w"] > 0 and b["y"] + b["h"] > 0]
         await page.evaluate(_ANNOTATE_JS, items)
         try:
-            image = await page.screenshot(path=path)
+            image = await self._unmarked(page, lambda: page.screenshot(path=path))
         finally:
             await page.evaluate("document.getElementById('__hutch_annotations')?.remove()")
         legend = "\n".join(f'{b["ref"]} {b["role"]} "{b["name"]}"'.replace(' ""', "") for b in items)
@@ -1947,6 +2058,10 @@ class Session:
         if index < 0 or index >= len(pages):
             raise RuntimeError(f"page index {index} out of range (0-{len(pages)-1})")
         target = pages[index]
+        tid = self._target_ids.get(target)
+        holder = self._holder(tid) if tid and self._is_agent_page(target) else None
+        if holder and holder != "me":
+            raise RuntimeError(f"tab {index} is held by agent {holder['session']} (pid {holder['pid']})")
         self._pages.remove(target)
         self._pages.append(target)
         self._focus = target
@@ -1962,10 +2077,14 @@ class Session:
         for p in self._pages:
             if p.is_closed():
                 continue
+            tid = self._target_ids.get(p)
+            holder = self._holder(tid) if tid else None
             result.append({
                 "index": filtered_idx,
                 "url": p.url,
                 "title": await p.title(),
+                "held": "me" if holder == "me" else (f"agent {holder['session']} (pid {holder['pid']})"
+                                                     if holder else None),
             })
             filtered_idx += 1
         return result
@@ -2330,6 +2449,10 @@ class Session:
 
     async def _teardown(self, *, keep_browser=False, clear_capture=True):
         self._closing = True
+        if not self.headless and self._leased:
+            await asyncio.gather(*(self._mark(p, False) for p in self._leased.values()),
+                                 return_exceptions=True)
+        self._release_all()
         try:
             self._stop_watchdog()
             if self._cdp_session:

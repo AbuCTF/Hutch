@@ -90,9 +90,16 @@
       their session is written; restore verified
 - [x] verified natively on windows 11 with python 3.13: edge + chromium, smoke test and 57 tests
 
+### v0.19.0 — done
+
+- [x] tab leases: one lease file per tab, atomic create, void when the owner's pid is dead; agents skip
+      tabs another agent holds, `goto` opens a fresh tab instead; `switch_page` refuses a held tab;
+      `pages` shows holders; `release_tab` / MCP `hutch_pages action=release`
+- [x] "agent" badge on leased tabs in a visible browser (closed shadow root, aria-hidden, no pointer
+      events), re-added on load while held, hidden during the agent's screenshots, removed on release
+
 ### Next
 
-- [ ] tab leases / visual indicator on agent-driven tabs
 
 ---
 
