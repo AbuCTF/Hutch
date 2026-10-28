@@ -11,18 +11,20 @@ logins stay on disk. per-session proxy, optional personas, daemon + MCP for agen
 ### Install
 
 ```bash
-git clone https://github.com/AbuCTF/Hutch.git
-cd Hutch
-./setup.sh
+curl -fsSL hutch.abu.rocks | sh
 ```
 
-or manually:
+installs into `~/.hutch/venv`, links `hutch` and `hutch-mcp` into `~/.local/bin`, fetches
+chromium, asks for sudo only if chromium's system libraries are missing, then runs
+`hutch doctor`. re-run to update; `HUTCH_REF=<tag or commit>` pins a version. uninstall with
+`rm -rf ~/.hutch/venv ~/.local/bin/hutch ~/.local/bin/hutch-mcp` (profiles in
+`~/.hutch/profiles` are kept).
+
+from a checkout, for development:
 
 ```bash
-pip install -e ".[dev,mcp]"
-playwright install chromium --no-shell
-sudo $(which playwright) install-deps chromium   # Debian/Ubuntu/WSL
-hutch doctor
+git clone https://github.com/AbuCTF/Hutch.git && cd Hutch
+./setup.sh
 ```
 
 ### Quick start
