@@ -107,9 +107,9 @@ def find_executable(browser="chromium"):
         path = _playwright_chromium()
         if path:
             return path
-        raise BrowserError("bundled chromium missing — run: playwright install chromium")
+        raise BrowserError("bundled chromium missing, run: playwright install chromium")
     if browser not in _CANDIDATES:
-        raise BrowserError(f"unknown browser '{browser}' — chromium, chrome, brave, edge or a path")
+        raise BrowserError(f"unknown browser '{browser}', use chromium, chrome, brave, edge or a path")
     plat = "win32" if sys.platform == "win32" else sys.platform
     for cand in _CANDIDATES[browser].get(plat, []):
         cand = os.path.expandvars(cand)
@@ -341,7 +341,7 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
             other = status(user_data_dir)
             if other:
                 return other
-            raise BrowserError(f"browser exited with code {proc.returncode} — see "
+            raise BrowserError(f"browser exited with code {proc.returncode}, see "
                                f"{os.path.join(user_data_dir, _LOG_FILE)}")
         time.sleep(0.05)
     proc.terminate()
@@ -439,7 +439,7 @@ def memory_mb(pid):
 def clone_profile(src, dst):
     """Copy a profile (logins, storage, settings) without caches or lock files."""
     if status(src):
-        raise BrowserError("source profile is open — close it first so its databases are consistent")
+        raise BrowserError("source profile is open, close it first")
     if os.path.exists(dst):
         raise BrowserError(f"destination exists: {dst}")
 
@@ -455,8 +455,8 @@ def clone_profile(src, dst):
 
 def attach_hint():
     if is_wsl():
-        return ("from WSL the Windows browser's 127.0.0.1 is only reachable with mirrored networking: "
-                "add '[wsl2]\\nnetworkingMode=mirrored' to %USERPROFILE%\\.wslconfig and run 'wsl --shutdown'")
+        return ("WSL needs mirrored networking: set networkingMode=mirrored under [wsl2] in "
+                "%USERPROFILE%\\.wslconfig, then run wsl --shutdown")
     return ""
 
 
@@ -476,9 +476,8 @@ def resolve_endpoint(target):
             return ep[1]
         hint = attach_hint()
         raise BrowserError(
-            f"{target} is not accepting agent connections — open {target}://inspect/#remote-debugging "
-            f"and enable remote debugging (Chrome 144+ based), then retry"
-            + (f"; {hint}" if hint else ""))
+            f"{target} has remote debugging off, enable it at {target}://inspect/#remote-debugging"
+            + (f". {hint}" if hint else ""))
     if target.startswith("ws://") or target.startswith("wss://"):
         return target
     if target.isdigit():

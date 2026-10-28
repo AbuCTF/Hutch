@@ -1,4 +1,4 @@
-persistent chromium sessions shared by humans and agents.
+isolated playwright session orchestrator.
 
 every session is a real browser on its own profile. you browse it, an agent attaches to it,
 either of you can move it on or off screen, and closing the window frees everything while

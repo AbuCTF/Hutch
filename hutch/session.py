@@ -500,8 +500,7 @@ class Session:
             await self._connect(playwright, running, owned=False)
         elif running:
             raise RuntimeError(
-                f"session '{self.name}' is open in a browser without agent access "
-                f"(pid {running['pid']}) — close that window first")
+                f"session '{self.name}' is open in login mode, close that window first")
         elif self.launcher == "native":
             await self._spawn(playwright)
         else:

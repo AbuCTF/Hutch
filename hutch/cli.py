@@ -18,15 +18,14 @@ _CAIDO_DEFAULT_PORT = 8080
 def _validate_name(name):
     if not name or not _NAME_RE.match(name):
         raise SystemExit(
-            f"hutch: invalid session name '{name}' — "
-            "use alphanumeric, hyphens, underscores, dots"
+            f"hutch: invalid session name '{name}', use letters, digits, '-', '_' or '.'"
         )
     return name
 
 
 def _parse_tag(value):
     if "=" not in value:
-        raise SystemExit(f"hutch: invalid tag '{value}' — expected key=value")
+        raise SystemExit(f"hutch: invalid tag '{value}', expected key=value")
     k, _, v = value.partition("=")
     return k, v
 
@@ -71,8 +70,8 @@ def _load(args, name, *, create=False):
         if getattr(args, "browser", None) and args.browser != s.browser:
             if not getattr(args, "force", False):
                 raise SystemExit(
-                    f"hutch: '{name}' belongs to {s.browser} — switching browsers on one profile can "
-                    "downgrade or corrupt it (use --force, or 'hutch clone')")
+                    f"hutch: {name} uses {s.browser}, switching can corrupt the profile. "
+                    "Use --force or hutch clone")
             s.browser, changed = args.browser, True
         if getattr(args, "proxy", None) or getattr(args, "caido", None) is not None:
             s.proxy = _resolve_proxy(args)
@@ -106,7 +105,7 @@ def _load(args, name, *, create=False):
         tags=tags,
         browser=getattr(args, "browser", None) or "chromium",
     )
-    print(f"created: {name} ({s.browser}{', persona ' + args.preset if fp and args.preset else ''})")
+    print(f"created: {name}")
     return s
 
 
@@ -136,18 +135,15 @@ async def cmd_browse(_pool, args):
     st = browser.status(s.profile_dir)
     if st:
         if not st["ws"]:
-            raise SystemExit(f"hutch: '{s.name}' is open without agent access (hutch login?) — use that window")
-        if st.get("headless"):
-            print(f"'{s.name}' is running headless — 'hutch headed {s.name}' to bring it on screen")
+            raise SystemExit(f"hutch: {s.name} is open in login mode, close that window first")
         if args.url:
             await _open_tab(st, args.url)
-            print(f"opened {args.url} in '{s.name}'")
+            print(f"{s.name}: opened {args.url}")
         else:
-            print(f"'{s.name}' already running (pid {st['pid']}, port {st['port']})")
+            print(f"{s.name}: already running {_mode(st)}")
         return
     st = _launch(s, headless=args.headless, url=args.url)
-    print(f"{s.name}: {_mode(st)} {s.browser} pid {st['pid']} — agents can attach (port {st['port']})")
-    print("close the window to stop it; the profile stays on disk")
+    print(f"{s.name}: running {_mode(st)}, pid {st['pid']}")
     if args.wait:
         await browser.wait_exit(s.profile_dir, st["pid"], timeout=float("inf"))
 
@@ -155,15 +151,15 @@ async def cmd_browse(_pool, args):
 async def cmd_login(_pool, args):
     s = _load(args, args.name, create=True)
     if browser.status(s.profile_dir):
-        raise SystemExit(f"hutch: '{s.name}' is running — 'hutch stop {s.name}' first")
+        raise SystemExit(f"hutch: {s.name} is running, stop it first")
     st = _launch(s, headless=False, url=args.url, debug=False)
-    print(f"{s.name}: plain {s.browser} window (no automation hooks) — sign in, then close the window")
+    print(f"{s.name}: sign in, then close the window to save")
     try:
         st["process"].wait()
     except KeyboardInterrupt:
         st["process"].terminate()
         st["process"].wait()
-    print(f"saved: {s.name} — 'hutch browse {s.name}' to reopen with agent access")
+    print(f"saved: {s.name}")
 
 
 async def cmd_stop(_pool, args):
@@ -201,14 +197,14 @@ async def _switch_mode(args, headless):
     s = _load(args, args.name)
     st = browser.status(s.profile_dir)
     if st and not st["ws"]:
-        raise SystemExit(f"hutch: '{s.name}' is open without agent access — close it first")
+        raise SystemExit(f"hutch: {s.name} is open in login mode, close that window first")
     if st and st.get("headless") == headless:
-        print(f"'{s.name}' is already {_mode(st)}")
+        print(f"{s.name}: already {_mode(st)}")
         return
     if st:
         await browser.stop(s.profile_dir)
     st = _launch(s, headless=headless)
-    print(f"{s.name}: now {_mode(st)} (pid {st['pid']}) — tabs and session restored")
+    print(f"{s.name}: running {_mode(st)}, pid {st['pid']}")
 
 
 async def cmd_headed(_pool, args):
@@ -230,7 +226,7 @@ async def cmd_clone(_pool, args):
     s = Session.from_profile_dir(dst_dir)
     s.name = args.dst
     s._save_meta()
-    print(f"cloned: {args.src} -> {args.dst} (logins and site data copied, caches skipped)")
+    print(f"cloned: {args.src} -> {args.dst}")
 
 
 async def cmd_tabs(_pool, args):
@@ -243,7 +239,7 @@ async def cmd_tabs(_pool, args):
         except browser.BrowserError as e:
             raise SystemExit(f"hutch: {e}")
     if not ws:
-        raise SystemExit(f"hutch: '{args.name}' is not running with agent access")
+        raise SystemExit(f"hutch: {args.name} is not running")
     targets = (await browser.cdp_call(ws, "Target.getTargets"))["targetInfos"]
     pages = [t for t in targets if t["type"] == "page"]
     for i, t in enumerate(pages):
@@ -259,11 +255,11 @@ async def cmd_attach(_pool, args):
         raise SystemExit(f"hutch: {e}")
     targets = (await browser.cdp_call(ws, "Target.getTargets"))["targetInfos"]
     pages = [t for t in targets if t["type"] == "page"]
-    print(f"reachable: {args.target} ({len(pages)} tabs) — {ws}")
+    print(f"{args.target}: {len(pages)} tabs, {ws}")
     if args.name:
         _validate_name(args.name)
         Session(args.name, os.path.join(_base_dir(args), args.name), endpoint=args.target)
-        print(f"registered '{args.name}' — agents use it like any session; hutch never closes it")
+        print(f"registered: {args.name}")
 
 
 async def cmd_create(_pool, args):
@@ -330,7 +326,7 @@ async def cmd_screenshot(pool, args):
     else:
         page = s._active_page()
     if not page:
-        print("no open pages — use --url to navigate first")
+        print("no open pages, pass --url")
         return
     await page.screenshot(path=args.output, full_page=args.full_page)
     print(f"saved: {args.output}")
@@ -509,18 +505,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "browser:\n"
-            "  browse <name> [url]   open a persistent browser (created if new)\n"
-            "  login <name> [url]    plain window for Google/SSO sign-in (no automation hooks)\n"
-            "  headed <name>         bring a headless browser on screen (tabs restored)\n"
-            "  headless <name>       move a browser off screen (tabs restored)\n"
+            "  browse <name> [url]   open a persistent browser\n"
+            "  login <name> [url]    sign in to Google or SSO\n"
+            "  headed <name>         show a headless browser\n"
+            "  headless <name>       hide a browser\n"
             "  tabs <name|target>    list open tabs\n"
-            "  ps                    running browsers with memory use\n"
-            "  stop <name>|--all     close gracefully (profile kept)\n"
+            "  ps                    running browsers and memory\n"
+            "  stop <name>|--all     close a browser, keep the profile\n"
             "  clone <src> <dst>     copy a profile with its logins\n"
-            "  attach <target>       reach your own chrome/brave/edge for agents\n"
+            "  attach <target>       connect to your chrome, brave or edge\n"
             "\n"
             "sessions:\n"
-            "  create          create a session (persona flags optional)\n"
+            "  create          create a session\n"
             "  list            list sessions\n"
             "  status          show session details\n"
             "  open            open a URL in a session\n"
@@ -548,9 +544,9 @@ def main():
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--base-dir", default=None, metavar="DIR",
-                   help="profile storage directory (default: ~/.hutch/profiles)")
+                   help="profile directory, default ~/.hutch/profiles")
     p.add_argument("--max-sessions", type=int, default=5, metavar="N",
-                   help="max concurrent browser sessions (default: 5)")
+                   help="max concurrent sessions, default 5")
 
     sub = p.add_subparsers(dest="command")
     for g in p._action_groups:
@@ -563,22 +559,22 @@ def main():
 
     def _common(c, *, persona=False):
         c.add_argument("--browser", metavar="NAME",
-                       help="chromium (default, bundled) | chrome | brave | edge | /path/to/binary")
+                       help="chromium, chrome, brave, edge or a binary path")
         c.add_argument("--force", action="store_true", help="allow changing a profile's browser")
         c.add_argument("--proxy", metavar="URL", help="proxy server (http/socks5)")
         c.add_argument("--caido", type=int, nargs="?", const=_CAIDO_DEFAULT_PORT,
-                       metavar="PORT", help="route through Caido (default port 8080)")
+                       metavar="PORT", help="route through Caido, default port 8080")
         c.add_argument("--bypass", metavar="HOSTS", help="proxy bypass list")
         c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
         if persona:
-            c.add_argument("--preset", metavar="NAME", help="fake fingerprint preset (persona)")
+            c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
             c.add_argument("--program", metavar="NAME", help="deterministic persona per program")
-            c.add_argument("--locale", metavar="CODE", help="persona locale (e.g. ja-JP)")
-            c.add_argument("--timezone", metavar="TZ", help="persona timezone (e.g. Asia/Tokyo)")
+            c.add_argument("--locale", metavar="CODE", help="persona locale, e.g. ja-JP")
+            c.add_argument("--timezone", metavar="TZ", help="persona timezone, e.g. Asia/Tokyo")
             c.add_argument("--tag", action="append", metavar="K=V", help="attach metadata tag")
 
     c = _sub("browse")
-    c.add_argument("name", help="session name (created if new)")
+    c.add_argument("name", help="session name")
     c.add_argument("url", nargs="?", help="URL to open")
     c.add_argument("--headless", action="store_true", help="run without a window")
     c.add_argument("--wait", action="store_true", help="block until the browser exits")
@@ -586,9 +582,9 @@ def main():
     c.set_defaults(func=cmd_browse)
 
     c = _sub("login")
-    c.add_argument("name", help="session name (created if new)")
+    c.add_argument("name", help="session name")
     c.add_argument("url", nargs="?", default="https://accounts.google.com/",
-                   help="sign-in page (default: Google)")
+                   help="sign-in page, default Google")
     _common(c)
     c.set_defaults(func=cmd_login)
 
@@ -650,7 +646,7 @@ def main():
     c.set_defaults(func=cmd_open)
 
     c = _sub("drive")
-    c.add_argument("name", help="session name (created if new)")
+    c.add_argument("name", help="session name")
     c.add_argument("--url", metavar="URL", help="navigate to URL")
     _common(c, persona=True)
     c.set_defaults(func=cmd_browse, headless=False, wait=True)
@@ -658,7 +654,7 @@ def main():
     c = _sub("screenshot")
     c.add_argument("name", help="session name")
     c.add_argument("output", nargs="?", default="screenshot.png", metavar="FILE",
-                   help="output file path (default: screenshot.png)")
+                   help="output file, default screenshot.png")
     c.add_argument("--url", metavar="URL", help="navigate to URL before capturing")
     c.add_argument("--full-page", action="store_true", help="capture full scrollable page")
     c.set_defaults(func=cmd_screenshot)
@@ -676,7 +672,7 @@ def main():
 
     c = _sub("serve")
     c.add_argument("--idle-timeout", type=int, default=900, metavar="SEC",
-                   help="hibernate idle headless sessions after N seconds (default: 900, 0=disable)")
+                   help="hibernate idle headless sessions after N seconds, default 900, 0 disables")
     c.add_argument("--exit-when-idle", action="store_true",
                    help="shut the daemon down once nothing has run for --idle-timeout")
     c.set_defaults(func=cmd_serve)
@@ -689,14 +685,14 @@ def main():
 
     c = _sub("caido", help="manage caido proxy integration")
     c.add_argument("--port", type=int, default=_CAIDO_DEFAULT_PORT,
-                   help="caido instance port (default: 8080)")
+                   help="caido port, default 8080")
     caido_sub = c.add_subparsers(dest="caido_sub")
     cs = caido_sub.add_parser("status", help="show caido connection info")
     cs = caido_sub.add_parser("projects", help="list caido projects")
     cs = caido_sub.add_parser("scopes", help="list caido scopes")
     cs = caido_sub.add_parser("history", help="query captured requests")
     cs.add_argument("--filter", metavar="HTTPQL", help="HTTPQL filter query")
-    cs.add_argument("--count", type=int, default=20, help="max results (default: 20)")
+    cs.add_argument("--count", type=int, default=20, help="max results, default 20")
     cs = caido_sub.add_parser("findings", help="list caido findings")
     cs = caido_sub.add_parser("scope-check", help="check if URL is in scope")
     cs.add_argument("url", help="URL to check")

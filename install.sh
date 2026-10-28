@@ -17,9 +17,9 @@ main() {
     command -v python3 >/dev/null || die "python3 not found"
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "python 3.10+ required"
     python3 -c 'import venv, ensurepip' 2>/dev/null \
-        || die "python venv missing — sudo apt install python3-venv (or your distro's equivalent)"
+        || die "python venv missing, install python3-venv"
 
-    say "[1/4] hutch ($ref) -> $venv"
+    say "installing hutch $ref into $venv"
     [ -x "$venv/bin/python" ] || python3 -m venv "$venv"
     "$venv/bin/python" -m pip install -q --upgrade pip
     "$venv/bin/python" -m pip install -q --upgrade "hutch[mcp] @ $src"
@@ -28,10 +28,10 @@ main() {
     ln -sf "$venv/bin/hutch" "$bin/hutch"
     ln -sf "$venv/bin/hutch-mcp" "$bin/hutch-mcp"
 
-    say "[2/4] chromium"
+    say "installing chromium"
     "$venv/bin/python" -m playwright install chromium --no-shell
 
-    say "[3/4] system libraries"
+    say "checking system libraries"
     if [ "$(uname)" = "Linux" ]; then
         exe=$("$venv/bin/python" -c 'from hutch.browser import find_executable; print(find_executable("chromium"))')
         if ldd "$exe" 2>/dev/null | grep -q "not found"; then
@@ -42,21 +42,21 @@ main() {
                     sudo "$venv/bin/playwright" install-deps chromium </dev/tty
                 fi
             else
-                echo "  chromium is missing libraries; install them with your package manager ('hutch doctor' lists them)"
+                echo "  chromium is missing libraries, hutch doctor lists them"
             fi
         else
-            echo "  already present"
+            echo "  ok"
         fi
     fi
 
-    say "[4/4] checking"
+    echo
     "$venv/bin/hutch" doctor || true
 
     case ":$PATH:" in
         *":$bin:"*) ;;
         *) printf '\nadd %s to PATH:\n  echo '\''export PATH="%s:$PATH"'\'' >> ~/.bashrc && exec bash\n' "$bin" "$bin" ;;
     esac
-    printf '\nnext: hutch login google   (then: hutch --help)\n'
+    printf '\nnext: hutch login google\n'
 }
 
 main "$@"
