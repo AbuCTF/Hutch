@@ -330,7 +330,9 @@ class HutchDaemon:
 
     async def _rpc_aria_snapshot(self, params):
         s = await self.pool.get(params["name"], launch=True)
-        return {"snapshot": await s.aria_snapshot(selector=params.get("selector"))}
+        return {"snapshot": await s.aria_snapshot(selector=params.get("selector"),
+                                                  interactive=params.get("interactive", False),
+                                                  diff=params.get("diff", False))}
 
     async def _rpc_create(self, params):
         name = params["name"]
@@ -511,12 +513,19 @@ class HutchDaemon:
 
     async def _rpc_screenshot(self, params):
         s, page = await self._get_page(params["name"])
-        png = await page.screenshot(full_page=params.get("full_page", False))
+        legend = None
+        if params.get("annotate"):
+            png, legend = await s.annotated_screenshot()
+        else:
+            png = await page.screenshot(full_page=params.get("full_page", False))
+        out = {"size": len(png)}
+        if legend is not None:
+            out["legend"] = legend
         if params.get("save", True):
             meta = self.artifacts.save_screenshot(params["name"], png,
                                                   label=params.get("label"))
-            return {"path": meta.path, "size": len(png)}
-        return {"size": len(png)}
+            out["path"] = meta.path
+        return out
 
     async def _rpc_network(self, params):
         name = params["name"]

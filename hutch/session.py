@@ -19,8 +19,29 @@ from playwright._impl._errors import TargetClosedError
 from . import browser as _browser
 from .context import Context, Snapshot
 from .events import EventLog
+from . import snapshot as _snapshot
 
 _log = logging.getLogger(__name__)
+
+
+_ANNOTATE_JS = """items => {
+  const root = document.createElement("div");
+  root.id = "__hutch_annotations";
+  root.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+  const colors = ["#e5484d", "#3e63dd", "#30a46c", "#f76b15", "#8e4ec6", "#0090ff", "#d6409f"];
+  items.forEach((b, i) => {
+    const c = colors[i % colors.length];
+    const box = document.createElement("div");
+    box.style.cssText = `position:fixed;left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;` +
+      `outline:2px solid ${c};outline-offset:-1px`;
+    const tag = document.createElement("div");
+    tag.textContent = b.ref;
+    tag.style.cssText = `position:fixed;left:${b.x}px;top:${Math.max(0, b.y - 15)}px;background:${c};` +
+      "color:#fff;font:bold 11px/14px monospace;padding:0 3px;border-radius:2px";
+    root.append(box, tag);
+  });
+  document.documentElement.append(root);
+}"""
 
 
 class SessionState(Enum):
@@ -236,6 +257,7 @@ class Session:
         self._dialog_plans = deque()
         self._agent_pages = weakref.WeakSet()
         self._target_ids = weakref.WeakKeyDictionary()
+        self._seen = weakref.WeakKeyDictionary()
         self._file_chooser = None
         self._downloads = {}
         self._browser_cdp = None
@@ -1331,15 +1353,48 @@ class Session:
             "url": url,
             "title": await page.title(),
             "dom": dom,
+            "changes": self._delta(page, url, dom) if dom is not None else None,
         }
 
+    def _delta(self, page, url, snap):
+        """What changed since the agent last saw this tab; None after a navigation or first look."""
+        prev = self._seen.get(page)
+        self._seen[page] = (url, snap)
+        if not prev or prev[0] != url:
+            return None
+        return _snapshot.diff(prev[1], snap)
+
     @_retry_on_disconnect
-    async def aria_snapshot(self, *, selector=None):
-        """Accessibility tree with refs (e12) usable as selectors in every action."""
+    async def aria_snapshot(self, *, selector=None, interactive=False, diff=False):
+        """Accessibility tree with refs (e12) usable as selectors in every action.
+
+        interactive: only elements an agent can act on (plus headings).
+        diff: only what changed since this tab was last snapshotted; the full tree after a navigation.
+        """
         page = self._require_page()
         if selector:
-            return await page.locator(_ref(selector)).aria_snapshot(mode="ai")
-        return await page.aria_snapshot(mode="ai")
+            snap = await page.locator(_ref(selector)).aria_snapshot(mode="ai")
+        else:
+            snap = await page.aria_snapshot(mode="ai")
+            delta = self._delta(page, page.url, snap)
+            if diff and delta is not None:
+                return delta or "no changes"
+        return _snapshot.interactive(snap) if interactive else snap
+
+    async def annotated_screenshot(self, *, path=None):
+        """Viewport screenshot with every actionable element boxed and labelled by its ref."""
+        page = self._require_page()
+        snap = await page.aria_snapshot(mode="ai", boxes=True)
+        size = await page.evaluate("[innerWidth, innerHeight]")
+        items = [b for b in _snapshot.boxes(snap)
+                 if b["x"] < size[0] and b["y"] < size[1] and b["x"] + b["w"] > 0 and b["y"] + b["h"] > 0]
+        await page.evaluate(_ANNOTATE_JS, items)
+        try:
+            image = await page.screenshot(path=path)
+        finally:
+            await page.evaluate("document.getElementById('__hutch_annotations')?.remove()")
+        legend = "\n".join(f'{b["ref"]} {b["role"]} "{b["name"]}"'.replace(' ""', "") for b in items)
+        return image, legend
 
     @_retry_on_disconnect(fallback=[])
     async def observe(self):
@@ -2181,6 +2236,7 @@ class Session:
             self._browser_cdp = None
             self._agent_pages = weakref.WeakSet()
             self._target_ids = weakref.WeakKeyDictionary()
+            self._seen = weakref.WeakKeyDictionary()
             self._launched_at = None
             if clear_capture and self.context:
                 self.context.clear()

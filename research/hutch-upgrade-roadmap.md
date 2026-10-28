@@ -48,9 +48,16 @@
       headed keeps the user's folder; `expect_download` works on native sessions again
 - [x] file choosers intercepted only on agent tabs; MCP `upload` action; live view shows and answers dialogs
 
+### v0.14.0 — done
+
+- [x] actions return only what changed on the tab (line diff of the aria snapshot, refs are stable);
+      full tree after a navigation or first look
+- [x] `filter: interactive` snapshot: actionable elements + headings, link targets, nearby label for
+      unnamed inputs
+- [x] annotated screenshots from `aria_snapshot(boxes=True)` (one call, iframe offsets applied), with legend
+
 ### Next
 
-- [ ] snapshot diffs, interactive-only snapshot, annotated screenshots
 - [ ] command registry generating RPC / CLI / MCP / client (removes the triple hand-written API)
 - [ ] secrets vault (`{{name}}` placeholders), record → replay / export
 - [ ] byte-budgeted capture buffers, artifact retention, `hutch gc`

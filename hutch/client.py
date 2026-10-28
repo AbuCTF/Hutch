@@ -79,8 +79,9 @@ class SessionHandle:
     async def observe(self):
         return await self._client._call("observe", {"name": self.name})
 
-    async def aria_snapshot(self, *, selector=None):
-        r = await self._client._call("aria_snapshot", {"name": self.name, "selector": selector})
+    async def aria_snapshot(self, *, selector=None, interactive=False, diff=False):
+        r = await self._client._call("aria_snapshot", {"name": self.name, "selector": selector,
+                                                       "interactive": interactive, "diff": diff})
         return r.get("snapshot")
 
     async def headed(self):
@@ -108,10 +109,10 @@ class SessionHandle:
         return await self._client._call("diff", {
             "name": self.name, "since": since})
 
-    async def screenshot(self, *, full_page=False, save=True, label=None):
+    async def screenshot(self, *, full_page=False, save=True, label=None, annotate=False):
         return await self._client._call("screenshot", {
             "name": self.name, "full_page": full_page,
-            "save": save, "label": label})
+            "save": save, "label": label, "annotate": annotate})
 
     async def network(self, *, pattern=None, method=None, since=None):
         return await self._client._call("network", {

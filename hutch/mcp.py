@@ -100,6 +100,15 @@ def create_mcp_server():
             "running": s.running,
         }
 
+    def _state(result) -> str:
+        """Page state after an action: url, title and only what changed on the page."""
+        if not isinstance(result, dict) or "dom" not in result:
+            return _json(result)
+        head = f"{result.get('url', '')} — {result.get('title', '')}"
+        if result.get("changes") is not None:
+            return head + ("\nchanges:\n" + result["changes"] if result["changes"] else "\nno changes")
+        return head + ("\n" + result["dom"] if result.get("dom") else "")
+
     def _json(obj) -> str:
         return json.dumps(obj, indent=2, default=_serialize)
 
@@ -223,9 +232,10 @@ def create_mcp_server():
                 name="hutch_observe",
                 description=(
                     "Accessibility snapshot of the current tab with refs like [ref=e12]. "
-                    "Pass a ref as the selector to hutch_interact. Refs are only valid "
-                    "until the page changes -- re-observe after navigation. mode=elements "
-                    "returns the legacy indexed element list instead."
+                    "Pass a ref as the selector to hutch_interact; refs stay stable while the page "
+                    "lives. filter=interactive lists only what can be acted on; diff=true returns only "
+                    "what changed since the last look (actions already return their changes). "
+                    "mode=elements returns the legacy indexed element list."
                 ),
                 inputSchema={
                     "type": "object",
@@ -233,6 +243,8 @@ def create_mcp_server():
                         "session": {"type": "string", "description": "Session name"},
                         "mode": {"type": "string", "enum": ["aria", "elements"], "default": "aria"},
                         "selector": {"type": "string", "description": "Limit the snapshot to this element (ref or CSS)"},
+                        "filter": {"type": "string", "enum": ["all", "interactive"], "default": "all"},
+                        "diff": {"type": "boolean", "default": False},
                     },
                     "required": ["session"],
                 },
@@ -279,12 +291,16 @@ def create_mcp_server():
             # 5. screenshot
             Tool(
                 name="hutch_screenshot",
-                description="Take a screenshot of the current page. Returns base64 PNG image.",
+                description=(
+                    "Screenshot of the current tab. annotate=true boxes every actionable element "
+                    "with its ref (e12) and lists them, so what you see maps straight to selectors."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "session": {"type": "string", "description": "Session name"},
                         "full_page": {"type": "boolean", "default": False, "description": "Capture full scrollable page"},
+                        "annotate": {"type": "boolean", "default": False, "description": "Label actionable elements with refs (viewport only)"},
                     },
                     "required": ["session"],
                 },
@@ -667,25 +683,25 @@ def create_mcp_server():
                     url,
                     wait_until=arguments.get("wait_until", "load"),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "back":
                 result = await session.go_back(
                     wait_until=arguments.get("wait_until", "load"),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "forward":
                 result = await session.go_forward(
                     wait_until=arguments.get("wait_until", "load"),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "reload":
                 result = await session.reload(
                     wait_until=arguments.get("wait_until", "load"),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "wait_for":
                 result = await session.wait_for(
@@ -694,7 +710,7 @@ def create_mcp_server():
                     url=arguments.get("url"),
                     timeout=arguments.get("timeout", 30000),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             return [TextContent(type="text", text=f"error: unknown action '{action}'")]
 
@@ -702,7 +718,10 @@ def create_mcp_server():
         if name == "hutch_observe":
             session = await _get_session(arguments["session"])
             if arguments.get("mode", "aria") == "aria":
-                snap = await session.aria_snapshot(selector=arguments.get("selector"))
+                snap = await session.aria_snapshot(
+                    selector=arguments.get("selector"),
+                    interactive=arguments.get("filter") == "interactive",
+                    diff=bool(arguments.get("diff")))
                 state = await _page_state(session)
                 return [TextContent(type="text", text=f"{state['url']} — {state['title']}\n{snap}")]
             elements = await session.observe()
@@ -738,7 +757,7 @@ def create_mcp_server():
                     wait_after=arguments.get("wait_after", "networkidle"),
                     timeout=arguments.get("timeout", 5000),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "fill":
                 value = arguments.get("value", "")
@@ -746,7 +765,7 @@ def create_mcp_server():
                     selector, value,
                     press_enter=arguments.get("press_enter", False),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "type":
                 value = arguments.get("value", "")
@@ -754,17 +773,17 @@ def create_mcp_server():
                     selector, value,
                     delay=arguments.get("delay", 50),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "press":
                 key = arguments.get("value", "Enter")
                 result = await session.press(selector, key)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "select":
                 value = arguments.get("value", "")
                 result = await session.select_option(selector, value)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "upload":
                 files = [f.strip() for f in arguments.get("value", "").split(",") if f.strip()]
@@ -773,7 +792,7 @@ def create_mcp_server():
 
             if action == "hover":
                 result = await session.hover(selector)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "scroll":
                 result = await session.scroll(
@@ -781,7 +800,7 @@ def create_mcp_server():
                     amount=arguments.get("amount", 500),
                     selector=selector if selector else None,
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "dblclick":
                 result = await session.dblclick(
@@ -789,23 +808,23 @@ def create_mcp_server():
                     wait_after=arguments.get("wait_after", "networkidle"),
                     timeout=arguments.get("timeout", 5000),
                 )
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "check":
                 result = await session.check(selector)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "uncheck":
                 result = await session.uncheck(selector)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "right_click":
                 result = await session.right_click(selector)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "tap":
                 result = await session.tap(selector)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "focus":
                 await session.focus(selector)
@@ -817,6 +836,11 @@ def create_mcp_server():
         # ------ hutch_screenshot
         if name == "hutch_screenshot":
             session = await _get_session(arguments["session"])
+            if arguments.get("annotate"):
+                png, legend = await session.annotated_screenshot()
+                return [ImageContent(type="image", data=base64.b64encode(png).decode(),
+                                     mimeType="image/png"),
+                        TextContent(type="text", text=legend or "no actionable elements in view")]
             png = await session.screenshot(
                 full_page=arguments.get("full_page", False),
             )
@@ -1016,7 +1040,7 @@ def create_mcp_server():
             if action == "switch":
                 index = arguments.get("index", 0)
                 result = await session.switch_page(index)
-                return [TextContent(type="text", text=_json(result))]
+                return [TextContent(type="text", text=_state(result))]
 
             if action == "close":
                 index = arguments.get("index")
