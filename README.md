@@ -72,7 +72,23 @@ hutch call help                                  # every command with its signat
 hutch call bb-acme click e12
 hutch call bb-acme evaluate "document.cookie"
 hutch call bb-acme set_cookies cookies:='[{"name": "a", "value": "1", "url": "https://acme.com"}]'
-``` Dialogs, downloads, file choosers, popups and crashes land in a
+```
+
+#### Secrets, record and replay
+
+```bash
+hutch secret set acme-pass --domain acme.com     # prompted, stored 0600 in ~/.hutch/secrets.json
+hutch call bb-acme fill "#password" "{{acme-pass}}"
+hutch record bb-acme -o login.json               # do it in the window, Ctrl+C to stop
+hutch replay bb-acme login.json
+hutch export login.json > login.py               # standalone playwright, secrets from HUTCH_SECRET_<NAME>
+```
+
+- agents type `{{name}}` in fill/type; the value never appears in MCP or daemon output, even via `evaluate`
+- a secret bound to domains is refused on any other site, so a prompt-injected agent cannot type it elsewhere
+- recordings come from real DOM events, so a human in the window and an agent are recorded the same way;
+  passwords become `{{password}}` (or the vault name) and are scrubbed from recorded URLs
+- screenshots are not redacted: a secret typed into a visible plain-text field shows in pixels Dialogs, downloads, file choosers, popups and crashes land in a
 per-session event log; new events are appended to every tool result, and `hutch_events` waits for
 them, answers the next dialog or sets files on an open chooser. Agent tabs accept alerts and
 dismiss confirm/prompt unless told otherwise; dialogs on the human's tabs are left to the human.

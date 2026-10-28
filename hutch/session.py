@@ -19,6 +19,8 @@ from playwright._impl._errors import TargetClosedError
 from . import browser as _browser
 from .context import Context, Snapshot
 from .events import EventLog
+from . import recorder as _recorder
+from . import secrets as _secrets
 from . import snapshot as _snapshot
 
 _log = logging.getLogger(__name__)
@@ -258,6 +260,9 @@ class Session:
         self._agent_pages = weakref.WeakSet()
         self._target_ids = weakref.WeakKeyDictionary()
         self._seen = weakref.WeakKeyDictionary()
+        self._recording = None
+        self._recorder_installed = False
+        self._front = None
         self._file_chooser = None
         self._downloads = {}
         self._browser_cdp = None
@@ -553,6 +558,9 @@ class Session:
             self._pages.append(page)
             self._setup_page(page)
         self._context.on("page", _on_new_page)
+        if self._recording is not None:
+            await self._install_recorder()
+        await self._find_front()
         self._start_watchdog()
         return self._context
 
@@ -728,6 +736,7 @@ class Session:
         page.on("download", lambda d, p=page: asyncio.ensure_future(self._on_pw_download(p, d)))
         page.on("popup", lambda popup, opener=page: self._follow_popup(opener, popup))
         page.on("crash", lambda p: self.events.emit("crash", tab=self._tab(p), url=p.url))
+        page.on("framenavigated", self._on_navigated)
         page.on("close", lambda _: self._on_page_closed())
         if self.headless:
             self._claim(page)
@@ -1056,13 +1065,110 @@ class Session:
         await chooser.set_files(files)
         return {"files": files if isinstance(files, list) else [files]}
 
+    @staticmethod
+    def _secret(value, page):
+        return _secrets.resolve(value, page.url)
+
+    async def start_recording(self):
+        """Record clicks, fills, keys and navigations in every tab, human or agent, until stop_recording."""
+        if not self._context:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        page = self._active_page()
+        self._recording = {"version": 1, "start": page.url if page else None, "steps": []}
+        self._recording_scrub = {}
+        await self._install_recorder()
+        return {"recording": True, "start": self._recording["start"]}
+
+    async def _install_recorder(self):
+        if not self._recorder_installed:
+            await self._context.expose_binding("__hutch_record", self._on_record)
+            await self._context.add_init_script(_recorder.SCRIPT)
+            self._recorder_installed = True
+        for p in self._pages:
+            if not p.is_closed():
+                try:
+                    await p.evaluate(_recorder.SCRIPT)
+                except Exception:
+                    pass
+
+    def stop_recording(self):
+        recording, self._recording = self._recording, None
+        if recording is None:
+            raise RuntimeError("not recording")
+        for step in recording["steps"]:
+            step.pop("t", None)
+        return json.loads(_secrets.scrub(json.dumps(recording), self._recording_scrub))
+
+    def _on_record(self, source, step):
+        if self._recording is None:
+            return
+        url = source["frame"].url if source.get("frame") else ""
+        if step.get("action") == "fill":
+            raw = step.get("value", "")
+            secret = _secrets.placeholder_for(raw) or ("{{password}}" if step.get("password") else None)
+            if secret:
+                step["value"] = secret
+                self._recording_scrub[raw] = secret
+        step.pop("password", None)
+        step["url"] = url
+        step["t"] = time.time()
+        _recorder.add_step(self._recording, step)
+
+    def _on_navigated(self, frame):
+        rec = self._recording
+        if rec is None or frame.parent_frame is not None or frame.url.startswith("about:"):
+            return
+        last = rec["steps"][-1] if rec["steps"] else None
+        if last and last.get("url") == frame.url:
+            return
+        caused = last and last["action"] in ("click", "press") and time.time() - last.get("t", 0) < 3
+        rec["steps"].append({"action": "wait_url" if caused else "goto", "url": frame.url})
+
+    async def replay(self, recording, *, timeout=15000):
+        """Run a recording (dict or path) on the active tab; {{name}} values come from the vault."""
+        rec = _recorder.load(recording)
+        page = self._require_page()
+        done = 0
+        try:
+            if rec.get("start") and page.url != rec["start"]:
+                await page.goto(rec["start"])
+            for step in rec["steps"]:
+                page = self._require_page()
+                await self._replay_step(page, step, timeout)
+                done += 1
+        except Exception as exc:
+            message = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+            return {"ok": False, "done": done, "failed": rec["steps"][done] if done < len(rec["steps"]) else None,
+                    "error": message}
+        return {"ok": True, "done": done, "url": self._require_page().url}
+
+    async def _replay_step(self, page, step, timeout):
+        a, sel = step["action"], step.get("selector")
+        if a == "goto":
+            await page.goto(step["url"])
+        elif a == "wait_url":
+            want = step["url"].split("?")[0].split("#")[0]
+            await page.wait_for_url(lambda u: u.split("?")[0].split("#")[0] == want, timeout=timeout)
+        elif a == "click":
+            await page.click(sel, timeout=timeout)
+        elif a == "fill":
+            await page.fill(sel, self._secret(step["value"], page), timeout=timeout)
+        elif a == "press":
+            await page.press(sel, step["key"], timeout=timeout)
+        elif a == "select":
+            await page.select_option(sel, step["value"], timeout=timeout)
+        elif a in ("check", "uncheck"):
+            await getattr(page, a)(sel, timeout=timeout)
+        elif a == "upload":
+            raise RuntimeError(f"upload step needs files: {step.get('files')}")
+
     def arm_dialog(self, accept=True, text=None):
         """Answer the next dialog on an agent tab this way (once), instead of the policy."""
         self._dialog_plans.append((bool(accept), text))
         return {"queued": len(self._dialog_plans)}
 
     def _active_page(self):
-        """The tab this session drives: its focus, else the newest open tab.
+        """The tab this session drives: its focus, else the tab in front when it joined, else the newest.
 
         On a browser the human is using, tabs they open never steal the agent's focus.
         """
@@ -1070,8 +1176,26 @@ class Session:
             return None
         if self._focus is not None and not self._focus.is_closed():
             return self._focus
+        if self._front is not None and not self._front.is_closed():
+            return self._front
         pages = [p for p in self._pages if not p.is_closed()]
         return pages[-1] if pages else None
+
+    async def _find_front(self):
+        """Remember the tab in front (restored sessions do not list it last)."""
+        async def visible(page):
+            try:
+                return await asyncio.wait_for(
+                    page.evaluate("[document.visibilityState === 'visible', document.hasFocus()]"), 2)
+            except Exception:
+                return [False, False]
+        pages = [p for p in self._pages if not p.is_closed()]
+        if len(pages) < 2:
+            return
+        states = await asyncio.gather(*(visible(p) for p in pages))
+        ranked = sorted(zip(states, range(len(pages))), key=lambda x: (x[0][1], x[0][0], x[1]))
+        best = ranked[-1]
+        self._front = pages[best[1]] if best[0][0] else None
 
     def cdp_endpoint(self):
         """The browser-level CDP websocket URL, or None when the browser is not running."""
@@ -1202,7 +1326,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.fill(_ref(selector), value)
+        await page.fill(_ref(selector), self._secret(value, page))
         if press_enter:
             await page.press(_ref(selector), "Enter")
         return await self.page_state()
@@ -1214,7 +1338,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.type(_ref(selector), text, delay=delay)
+        await page.type(_ref(selector), self._secret(text, page), delay=delay)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -1680,7 +1804,7 @@ class Session:
             raise RuntimeError("specify frame name or url")
         if not frame:
             raise RuntimeError("frame not found")
-        await frame.fill(_ref(selector), value)
+        await frame.fill(_ref(selector), self._secret(value, frame))
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -1759,7 +1883,7 @@ class Session:
             loc = page.get_by_role(role, name=name)
         else:
             raise RuntimeError("specify label, placeholder, or role")
-        await loc.nth(nth).fill(value)
+        await loc.nth(nth).fill(self._secret(value, page))
         return await self.page_state()
 
     # --- advanced waits ---
@@ -2100,7 +2224,7 @@ class Session:
     @_retry_on_disconnect
     async def keyboard_type(self, text, *, delay=0):
         page = self._require_page()
-        await page.keyboard.type(text, delay=delay)
+        await page.keyboard.type(self._secret(text, page), delay=delay)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -2116,7 +2240,7 @@ class Session:
     @_retry_on_disconnect
     async def keyboard_insert_text(self, text):
         page = self._require_page()
-        await page.keyboard.insert_text(text)
+        await page.keyboard.insert_text(self._secret(text, page))
 
     # --- cdp ---
 
@@ -2237,6 +2361,8 @@ class Session:
             self._agent_pages = weakref.WeakSet()
             self._target_ids = weakref.WeakKeyDictionary()
             self._seen = weakref.WeakKeyDictionary()
+            self._recorder_installed = False
+            self._front = None
             self._launched_at = None
             if clear_capture and self.context:
                 self.context.clear()

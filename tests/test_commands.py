@@ -92,7 +92,7 @@ def test_cli_call(tmp_path):
         assert out.returncode == 0, out.stderr
         assert run("call", "c", "inner_text", "h1").stdout.strip() == "hi"
         assert json.loads(run("call", "c", "evaluate", "[1, 2]").stdout) == [1, 2]
-        bad = run("call", "c", "click", "nope=1")
+        bad = run("call", "c", "click", "wait_after=load")
         assert bad.returncode == 1 and bad.stderr.startswith("hutch: click(selector")
         assert browser.status(os.path.join(base, "c"))
     finally:

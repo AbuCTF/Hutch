@@ -149,3 +149,19 @@ async def test_browser_exit_hibernates_session(base, site):
         assert gone == ["gone"] and not s.is_alive
         s = await pool.get("gone", launch=True)
         assert s.is_alive
+
+
+@pytest.mark.asyncio
+async def test_joining_client_acts_on_the_tab_in_front(base, site):
+    async with Pool(base_dir=base) as owner:
+        s = await owner.create("front", headless=True)
+        await s.goto(site + "/?a")
+        st = browser.status(s.profile_dir)
+        for q in ("b", "c"):
+            await browser.cdp_call(st["ws"], "Target.createTarget", {"url": f"{site}/?{q}"})
+        targets = (await browser.cdp_call(st["ws"], "Target.getTargets"))["targetInfos"]
+        b = next(t["targetId"] for t in targets if t["url"].endswith("?b"))
+        await browser.cdp_call(st["ws"], "Target.activateTarget", {"targetId": b})
+        async with Pool(base_dir=base) as agent:
+            other = await agent.get("front", launch=True)
+            assert other._active_page().url.endswith("?b")

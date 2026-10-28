@@ -35,6 +35,13 @@ def names():
     return sorted(found + [a for a in ALIASES if _method(a)])
 
 
+def parameters(name):
+    target = _method(name)
+    if not target:
+        raise KeyError(f"unknown command '{name}'")
+    return [p for p in inspect.signature(getattr(Session, target)).parameters if p != "self"]
+
+
 def describe(name=None):
     """[{name, signature, doc}] for one command or all of them."""
     out = []

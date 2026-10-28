@@ -5,7 +5,7 @@ import signal
 import time
 from dataclasses import asdict
 
-from . import __version__, commands
+from . import __version__, commands, secrets
 from .artifacts import ArtifactStore
 from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
@@ -149,7 +149,7 @@ class HutchDaemon:
                 pass
 
     async def _send(self, writer, data):
-        writer.write(json.dumps(data, default=_serialize).encode() + b"\n")
+        writer.write(secrets.redact(json.dumps(data, default=_serialize)).encode() + b"\n")
         await writer.drain()
 
     async def _dispatch(self, req):

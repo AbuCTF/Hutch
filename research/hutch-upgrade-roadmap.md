@@ -63,9 +63,17 @@
       `hutch call <name> <cmd> ...` (httpie-style `key=value` / `key:=json`); 106 commands everywhere
 - [x] curated MCP tools stay (grouped actions are easier for models than 106 tools); `hutch_call` covers the rest
 
+### v0.16.0 — done
+
+- [x] secrets vault (`hutch secret`, 0600 file), `{{name}}` resolved at type time, domain binding,
+      redaction of every MCP / daemon response (raw, JSON-escaped and URL-encoded forms)
+- [x] recorder from real DOM events (human or agent alike), robust selectors, password scrubbing incl. URLs;
+      `hutch record`, `replay`, `export` (standalone playwright); session methods so every surface has them
+- [x] a client joining a browser acts on the tab in front, not the newest-listed (restored sessions)
+- [x] `hutch call` treats `key=value` as a keyword only for real parameters (selectors contain `=`)
+
 ### Next
 
-- [ ] secrets vault (`{{name}}` placeholders), record → replay / export
 - [ ] byte-budgeted capture buffers, artifact retention, `hutch gc`
 - [ ] Windows transport (loopback TCP + token), PDEATHSIG equivalent (job objects)
 - [ ] tab leases / visual indicator on agent-driven tabs

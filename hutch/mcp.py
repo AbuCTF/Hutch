@@ -533,8 +533,10 @@ def create_mcp_server():
                 description=(
                     "Run any session command by name when no dedicated hutch tool covers it: "
                     "low-level mouse/keyboard, cookies, headers, frames, storage, tracing, pdf, "
-                    "geolocation, media emulation and more. command='help' lists every command "
-                    "with its signature; args are keyword arguments by parameter name."
+                    "geolocation, media emulation, start_recording / stop_recording / replay and more. "
+                    "command='help' lists every command with its signature; args are keyword arguments "
+                    "by parameter name. Values like {{name}} in fill/type are typed from the human's "
+                    "secret vault; secret values never appear in results."
                 ),
                 inputSchema={
                     "type": "object",
@@ -592,7 +594,9 @@ def create_mcp_server():
         trailer = _new_events(sname) if sname and name != "hutch_events" else None
         if trailer:
             result = list(result) + [TextContent(type="text", text=trailer)]
-        return result
+        from hutch import secrets
+        return [TextContent(type="text", text=secrets.redact(c.text)) if c.type == "text" else c
+                for c in result]
 
     async def _dispatch(name: str, arguments: dict):
         from mcp.types import TextContent, ImageContent

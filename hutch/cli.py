@@ -330,12 +330,13 @@ async def cmd_call(pool, args):
         for row in commands.describe(args.cmd if args.cmd not in (None, "help") else None):
             print(f"{row['signature']}  {row['doc']}".rstrip())
         return
+    known = commands.parameters(args.cmd)
     positional, kw = [], {}
     for token in args.args:
         key, eq, value = token.partition("=")
-        if eq and key.endswith(":") and key[:-1].isidentifier():
+        if eq and key.endswith(":") and key[:-1] in known:
             kw[key[:-1]] = json.loads(value)
-        elif eq and key.isidentifier():
+        elif eq and key in known:
             kw[key] = _arg(value)
         else:
             positional.append(_arg(token))
@@ -354,6 +355,90 @@ async def cmd_call(pool, args):
         print(result)
     elif result is not None:
         print(json.dumps(result, indent=2))
+
+
+async def cmd_secret(_pool, args):
+    from . import secrets
+    try:
+        if args.action == "set":
+            if not args.name:
+                raise SystemExit("hutch: give a secret name")
+            if sys.stdin.isatty():
+                import getpass
+                value = getpass.getpass(f"{args.name}: ")
+            else:
+                value = sys.stdin.read().rstrip("\n")
+            if not value:
+                raise SystemExit("hutch: empty value")
+            secrets.set_secret(args.name, value, args.domain)
+            print(f"saved: {args.name}")
+        elif args.action == "rm":
+            secrets.remove(args.name)
+            print(f"removed: {args.name}")
+        else:
+            rows = secrets.listing()
+            for r in rows:
+                print(f"{r['name']:<24} {', '.join(r['domains']) or 'any site'}")
+            if not rows:
+                print("no secrets")
+    except secrets.SecretError as e:
+        raise SystemExit(f"hutch: {e}")
+
+
+def _running(args, headless):
+    s = _load(args, args.name)
+    st = s.endpoint or browser.status(s.profile_dir)
+    if st and not s.endpoint and not st["ws"]:
+        raise SystemExit(f"hutch: {s.name} is open in login mode, close that window first")
+    if not st:
+        _launch(s, headless=headless)
+    return s
+
+
+async def cmd_record(pool, args):
+    import signal
+    import time
+    s = _running(args, headless=False)
+    s = await pool.get(s.name, launch=True)
+    await s.start_recording()
+    print(f"{s.name}: recording, Ctrl+C to stop", flush=True)
+    done = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGINT, done.set)
+    shown = 0
+    while not done.is_set() and s.is_alive:
+        steps = s._recording["steps"]
+        for step in steps[shown:]:
+            print("  " + " ".join(str(step.get(k)) for k in ("action", "selector", "key", "url")
+                                  if step.get(k) is not None), flush=True)
+        shown = len(steps)
+        try:
+            await asyncio.wait_for(done.wait(), 0.3)
+        except asyncio.TimeoutError:
+            pass
+    recording = s.stop_recording()
+    out = args.output or os.path.join(os.path.dirname(_base_dir(args)), "recordings",
+                                      f"{s.name}-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(recording, f, indent=2)
+    print(f"saved: {out}, {len(recording['steps'])} steps")
+
+
+async def cmd_replay(pool, args):
+    s = _running(args, headless=not args.headed)
+    s = await pool.get(s.name, launch=True)
+    result = await s.replay(args.file)
+    if result["ok"]:
+        print(f"{s.name}: replayed {result['done']} steps, now at {result['url']}")
+    else:
+        failed = result["failed"] or {}
+        raise SystemExit(f"hutch: step {result['done'] + 1} {failed.get('action')} "
+                         f"{failed.get('selector') or failed.get('url') or ''} failed: {result['error']}")
+
+
+async def cmd_export(_pool, args):
+    from . import recorder
+    print(recorder.to_python(recorder.load(args.file)), end="")
 
 
 async def cmd_screenshot(pool, args):
@@ -549,7 +634,7 @@ async def _run(args):
         sys.exit(1)
 
 
-_POOL_COMMANDS = {"screenshot", "call"}
+_POOL_COMMANDS = {"screenshot", "call", "record", "replay"}
 
 
 def main():
@@ -574,6 +659,10 @@ def main():
             "  headless <name>       hide a browser\n"
             "  view <name>           watch and drive a browser from a web page\n"
             "  call <name> <cmd> ... run any session command: hutch call help\n"
+            "  record <name>         record what happens in the browser until Ctrl+C\n"
+            "  replay <name> <file>  run a recording again\n"
+            "  export <file>         recording as a standalone playwright script\n"
+            "  secret set|list|rm    values agents type as {{name}} but never see\n"
             "  tabs <name|target>    list open tabs\n"
             "  ps                    running browsers and memory\n"
             "  stop <name>|--all     close a browser, keep the profile\n"
@@ -678,6 +767,27 @@ def main():
     c = _sub("tabs")
     c.add_argument("name", help="session name or attach target (brave, chrome, edge, port)")
     c.set_defaults(func=cmd_tabs)
+
+    c = _sub("secret")
+    c.add_argument("action", choices=["set", "list", "rm"])
+    c.add_argument("name", nargs="?", help="secret name, typed as {{name}}")
+    c.add_argument("--domain", action="append", metavar="HOST", help="only type it on this site, repeatable")
+    c.set_defaults(func=cmd_secret)
+
+    c = _sub("record")
+    c.add_argument("name", help="session name")
+    c.add_argument("-o", "--output", metavar="FILE", help="default ~/.hutch/recordings/<name>-<time>.json")
+    c.set_defaults(func=cmd_record)
+
+    c = _sub("replay")
+    c.add_argument("name", help="session name")
+    c.add_argument("file", help="recording file")
+    c.add_argument("--headed", action="store_true", help="start the browser with a window")
+    c.set_defaults(func=cmd_replay)
+
+    c = _sub("export")
+    c.add_argument("file", help="recording file")
+    c.set_defaults(func=cmd_export)
 
     c = _sub("call")
     c.add_argument("name", help="session name, or help")
