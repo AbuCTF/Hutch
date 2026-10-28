@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 from . import browser as _browser
 from .caido import CaidoClient, CaidoConfig
 from .differ import diff_responses
+from .live import LiveServer
 from .session import Fingerprint, ProxyConfig, Session
 
 
@@ -28,6 +29,7 @@ class Pool:
         self._playwright = None
         self._pw_context = None
         self.caido = None
+        self._live = None
 
         os.makedirs(self.base_dir, exist_ok=True)
 
@@ -48,6 +50,9 @@ class Pool:
         if self.caido:
             await self.caido.close()
             self.caido = None
+        if self._live:
+            await self._live.stop()
+            self._live = None
         if self._playwright:
             await self._playwright.stop()
         self._pw_context = None
@@ -122,11 +127,14 @@ class Pool:
         self._sessions[name] = session
         return session
 
-    async def get(self, name, *, launch=False):
+    async def get(self, name, *, launch=False, headless=None):
+        """Agents start a stopped profile headless unless asked; a running browser keeps its mode."""
         session = self._sessions.get(name)
         if not session:
             raise KeyError(f"no session named '{name}'")
         if launch and not session.is_alive:
+            if session.launcher == "native" and not _browser.status(session.profile_dir):
+                session.headless = True if headless is None else headless
             self._launching += 1
             try:
                 if not self._playwright:
@@ -150,6 +158,15 @@ class Pool:
                 raise ValueError(f"session '{name}' already exists")
             return await self.get(name, launch=True)
         return await self.create(name, endpoint=str(target))
+
+    async def view(self, name, *, host="127.0.0.1", port=0):
+        """Live view URL for a session, opened on the tab the agent is driving."""
+        session = await self.get(name, launch=True)
+        if not self._live:
+            self._live = LiveServer(host, port)
+            await self._live.start()
+        self._live.add(name, session.cdp_endpoint)
+        return self._live.url(name, await session.target_id())
 
     async def set_headless(self, name, headless):
         session = await self.get(name)

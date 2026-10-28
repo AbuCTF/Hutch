@@ -92,6 +92,9 @@ class SessionHandle:
     async def detach(self):
         return await self._client._call("detach", {"name": self.name})
 
+    async def view(self):
+        return (await self._client._call("view", {"name": self.name}))["url"]
+
     async def page_state(self):
         return await self._client._call("snapshot", {
             "name": self.name, "full": False})

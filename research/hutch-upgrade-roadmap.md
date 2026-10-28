@@ -28,15 +28,18 @@
 - [x] version from package metadata; extras fixed; `setup.sh` fails loudly; `--no-shell` (−273 MB)
 - [x] `HUTCH_BASE_DIR`
 
-### Needs the user
+### v0.11.1 – v0.12.0 — done
 
-- [ ] `hutch login google` → sign in → `hutch browse google` → confirm Google stays signed in with the
-      debugging port on, and "Sign in with Google" lists the accounts on a third-party site
-- [ ] decide on WSL `networkingMode=mirrored` (only needed to attach to Windows Brave/Chrome)
+- [x] `curl -fsSL hutch.abu.rocks | sh` installer (Cloudflare redirect to the raw GitHub file)
+- [x] terse CLI and doctor output
+- [x] Google sign-in verified: 2 accounts, still signed in with the debugging port on, webdriver false
+- [x] WSL mirrored networking: not now, agents run inside WSL
+- [x] live view: `hutch view`, MCP `view`, daemon `view`; screencast + mouse, keyboard, paste, copy,
+      tabs, URL bar; follows popups from the viewed tab; reachable from Windows under NAT
+- [x] agents start a stopped profile headless (a remembered headed mode no longer pops a window)
 
 ### Next
 
-- [ ] live view: screencast + input forwarding page for headless sessions (no relaunch)
 - [ ] snapshot diffs, interactive-only snapshot, annotated screenshots
 - [ ] event bus: dialogs, downloads, file choosers, popups pushed to agents
 - [ ] command registry generating RPC / CLI / MCP / client (removes the triple hand-written API)

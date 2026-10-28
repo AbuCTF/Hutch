@@ -211,6 +211,7 @@ class HutchDaemon:
             "attach": self._rpc_attach,
             "detach": self._rpc_detach,
             "set_headless": self._rpc_set_headless,
+            "view": self._rpc_view,
             "aria_snapshot": self._rpc_aria_snapshot,
             # navigation
             "go_back": self._rpc_go_back,
@@ -320,6 +321,9 @@ class HutchDaemon:
     async def _rpc_set_headless(self, params):
         s = await self.pool.set_headless(params["name"], params["headless"])
         return _session_info(s)
+
+    async def _rpc_view(self, params):
+        return {"url": await self.pool.view(params["name"])}
 
     async def _rpc_aria_snapshot(self, params):
         s = await self.pool.get(params["name"], launch=True)

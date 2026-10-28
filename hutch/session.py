@@ -497,6 +497,8 @@ class Session:
             ws = await asyncio.to_thread(_browser.resolve_endpoint, self.endpoint)
             await self._connect(playwright, {"ws": ws}, owned=False)
         elif running and running["ws"]:
+            if running.get("headless") is not None:
+                self.headless = running["headless"]
             await self._connect(playwright, running, owned=False)
         elif running:
             raise RuntimeError(
@@ -906,6 +908,23 @@ class Session:
             return self._focus
         pages = [p for p in self._pages if not p.is_closed()]
         return pages[-1] if pages else None
+
+    def cdp_endpoint(self):
+        """The browser-level CDP websocket URL, or None when the browser is not running."""
+        if self.endpoint:
+            return _browser.resolve_endpoint(self.endpoint)
+        ep = _browser.read_endpoint(self.profile_dir)
+        return ep[1] if ep else None
+
+    async def target_id(self, page=None):
+        page = page or self._active_page()
+        if page is None:
+            return None
+        cdp = await self._context.new_cdp_session(page)
+        try:
+            return (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        finally:
+            await cdp.detach()
 
     def _require_page(self):
         self._require_active()

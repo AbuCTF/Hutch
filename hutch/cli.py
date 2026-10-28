@@ -345,6 +345,29 @@ async def cmd_destroy(_pool, args):
     print(f"destroyed: {args.name}")
 
 
+async def cmd_view(_pool, args):
+    from .live import LiveServer
+    s = _load(args, args.name)
+    st = s.endpoint or browser.status(s.profile_dir)
+    if st and not s.endpoint and not st["ws"]:
+        raise SystemExit(f"hutch: {s.name} is open in login mode, close that window first")
+    if not st:
+        st = _launch(s, headless=True)
+    live = LiveServer(args.host, args.port)
+    live.add(s.name, s.cdp_endpoint)
+    await live.start()
+    url = live.url(s.name)
+    print(f"{s.name}: {url}", flush=True)
+    if not args.no_open:
+        browser.open_url(url)
+    try:
+        while s.endpoint or browser.status(s.profile_dir):
+            await asyncio.sleep(2)
+        print(f"{s.name}: stopped")
+    finally:
+        await live.stop()
+
+
 async def cmd_doctor(_pool, args):
     from . import doctor
     sys.exit(doctor.run(_base_dir(args)))
@@ -509,6 +532,7 @@ def main():
             "  login <name> [url]    sign in to Google or SSO\n"
             "  headed <name>         show a headless browser\n"
             "  headless <name>       hide a browser\n"
+            "  view <name>           watch and drive a browser from a web page\n"
             "  tabs <name|target>    list open tabs\n"
             "  ps                    running browsers and memory\n"
             "  stop <name>|--all     close a browser, keep the profile\n"
@@ -613,6 +637,13 @@ def main():
     c = _sub("tabs")
     c.add_argument("name", help="session name or attach target (brave, chrome, edge, port)")
     c.set_defaults(func=cmd_tabs)
+
+    c = _sub("view")
+    c.add_argument("name", help="session name")
+    c.add_argument("--host", default="127.0.0.1", help="listen address, default 127.0.0.1")
+    c.add_argument("--port", type=int, default=0, help="listen port, default random")
+    c.add_argument("--no-open", action="store_true", help="print the URL without opening it")
+    c.set_defaults(func=cmd_view)
 
     c = _sub("clone")
     c.add_argument("src", help="existing session")

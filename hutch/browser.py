@@ -364,9 +364,13 @@ def _settle(port, timeout=3.0):
 
 
 async def cdp_call(ws_url, method, params=None, timeout=5.0):
+    return await asyncio.wait_for(_cdp_call(ws_url, method, params), timeout)
+
+
+async def _cdp_call(ws_url, method, params):
     import aiohttp
     async with aiohttp.ClientSession() as http:
-        async with http.ws_connect(ws_url, max_msg_size=0, timeout=timeout) as ws:
+        async with http.ws_connect(ws_url, max_msg_size=0) as ws:
             await ws.send_json({"id": 1, "method": method, "params": params or {}})
             async for msg in ws:
                 data = json.loads(msg.data)
@@ -458,6 +462,15 @@ def attach_hint():
         return ("WSL needs mirrored networking: set networkingMode=mirrored under [wsl2] in "
                 "%USERPROFILE%\\.wslconfig, then run wsl --shutdown")
     return ""
+
+
+def open_url(url):
+    """Open a URL in the user's desktop browser; on WSL that is the Windows default."""
+    if is_wsl() and shutil.which("explorer.exe"):
+        subprocess.Popen(["explorer.exe", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    import webbrowser
+    return webbrowser.open(url)
 
 
 def platform_summary():

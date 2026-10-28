@@ -36,6 +36,7 @@ hutch login google                     # plain window, sign in to your Google ac
 hutch clone google bb-acme             # new profile that already has those accounts
 hutch browse bb-acme https://acme.com --caido   # persistent window through Caido
 hutch tabs bb-acme                     # what is open
+hutch view bb-acme                     # watch and drive it from a web page, no relaunch
 hutch headless bb-acme                 # off screen, tabs + session restored (~1.5s)
 hutch headed bb-acme                   # back on screen
 hutch ps                               # running browsers and their memory
@@ -46,8 +47,19 @@ hutch doctor                           # libraries, fonts, display, attachable b
 - closing the window ends the process; nothing keeps running and the profile stays in `~/.hutch/profiles/<name>`
 - `browse` again restores the last tabs, including session cookies and sessionStorage
 - agents (MCP, daemon, python) join a running session over CDP and work in their own tab
+- an agent that starts a stopped profile starts it headless; `view` shows what it is doing
 - `--browser chrome|brave|edge|/path` per profile; a profile stays on the browser it was made with
 - `HUTCH_BASE_DIR` switches the profile root
+
+#### Agents
+
+```bash
+claude mcp add -s user hutch -- hutch-mcp      # Claude Code; any MCP client runs hutch-mcp over stdio
+```
+
+`hutch_sessions` lists, creates and attaches sessions; `action: "view"` returns a live view URL
+for the human. `hutch_observe` returns an accessibility snapshot whose `[ref=e12]` refs every
+action accepts as a selector.
 
 #### Google sign-in
 

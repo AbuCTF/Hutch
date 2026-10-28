@@ -92,7 +92,8 @@ def create_mcp_server():
                     "Manage browser sessions. Actions: list (default), create, close, destroy, "
                     "attach (join a browser hutch did not start: target chrome|brave|edge|port|url), "
                     "detach (disconnect, leave it running), headed / headless (relaunch the same "
-                    "profile on/off screen; tabs, cookies and sessionStorage carry over). "
+                    "profile on/off screen; tabs, cookies and sessionStorage carry over), "
+                    "view (live view URL the human opens to watch and take over without a relaunch). "
                     "A session the human opened with 'hutch browse' is joined automatically."
                 ),
                 inputSchema={
@@ -101,7 +102,7 @@ def create_mcp_server():
                         "action": {
                             "type": "string",
                             "enum": ["list", "create", "close", "destroy",
-                                     "attach", "detach", "headed", "headless"],
+                                     "attach", "detach", "headed", "headless", "view"],
                             "default": "list",
                             "description": "Operation to perform",
                         },
@@ -544,6 +545,12 @@ def create_mcp_server():
                     browser=arguments.get("browser") or "chromium",
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
+
+            if action == "view":
+                sname = arguments.get("name")
+                if not sname:
+                    return [TextContent(type="text", text="error: 'name' is required for view")]
+                return [TextContent(type="text", text=await pool.view(sname))]
 
             if action in ("attach", "detach", "headed", "headless"):
                 sname = arguments.get("name")
