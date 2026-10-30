@@ -106,6 +106,26 @@ def _value(entry):
     return totp(entry)
 
 
+def import_json(path, mapping, *, key=None, domains=None):
+    """Copy values from a JSON credentials file into the vault without anyone seeing them.
+
+    mapping: {"field": "name"} or {"field": "name:totp"}; key picks a nested object (e.g. "yeswehack").
+    Returns the names stored.
+    """
+    with open(path) as f:
+        data = json.load(f)
+    for part in (key or "").split(".") if key else ():
+        data = data[part]
+    stored = []
+    for field, target in mapping.items():
+        name, _, kind = target.partition(":")
+        if field not in data or data[field] in (None, ""):
+            raise SecretError(f"'{field}' is missing from {path}" + (f" [{key}]" if key else ""))
+        (set_totp if kind == "totp" else set_secret)(name, str(data[field]), domains)
+        stored.append(name)
+    return stored
+
+
 def remove(name):
     data = _load()
     if data.pop(name, None) is None:

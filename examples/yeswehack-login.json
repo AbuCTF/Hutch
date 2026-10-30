@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "start": "https://yeswehack.com/auth/login",
+  "steps": [
+    {"action": "fill", "selector": "input[type=\"email\"], input[name=\"email\"], input[autocomplete=\"username\"], input[name=\"username\"]", "value": "{{ywh-email}}"},
+    {"action": "fill", "selector": "input[type=\"password\"]", "value": "{{ywh-pass}}"},
+    {"action": "click", "selector": "button[type=\"submit\"], input[type=\"submit\"]"},
+    {"action": "wait", "selector": "input[autocomplete=\"one-time-code\"], input[name*=\"totp\" i], input[id*=\"totp\" i], input[name*=\"code\" i]", "timeout": 30000},
+    {"action": "fill", "selector": "input[autocomplete=\"one-time-code\"], input[name*=\"totp\" i], input[id*=\"totp\" i], input[name*=\"code\" i]", "value": "{{ywh-otp}}"},
+    {"action": "click", "selector": "button[type=\"submit\"], input[type=\"submit\"]"},
+    {"action": "wait_url", "not": "/auth/"}
+  ]
+}

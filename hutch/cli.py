@@ -378,6 +378,12 @@ async def cmd_secret(_pool, args):
             else:
                 secrets.set_secret(args.name, value, args.domain)
                 print(f"saved: {args.name}")
+        elif args.action == "import":
+            if not args.name or not args.map:
+                raise SystemExit("hutch: give the json file and --map field=name[:totp]")
+            mapping = dict(m.split("=", 1) for m in args.map)
+            stored = secrets.import_json(args.name, mapping, key=args.key, domains=args.domain)
+            print("saved: " + ", ".join(stored))
         elif args.action == "code":
             code, left = secrets.code(args.name)
             print(f"{code}  {left}s")
@@ -853,10 +859,12 @@ def main():
     c.set_defaults(func=cmd_tabs)
 
     c = _sub("secret")
-    c.add_argument("action", choices=["set", "list", "rm", "code"])
-    c.add_argument("name", nargs="?", help="secret name, typed as {{name}}")
+    c.add_argument("action", choices=["set", "list", "rm", "code", "import"])
+    c.add_argument("name", nargs="?", help="secret name, typed as {{name}}; for import, the json file")
     c.add_argument("--domain", action="append", metavar="HOST", help="only type it on this site, repeatable")
     c.add_argument("--totp", action="store_true", help="an authenticator secret; {{name}} types the current code")
+    c.add_argument("--key", help="import: the object inside the file, e.g. yeswehack")
+    c.add_argument("--map", action="append", metavar="FIELD=NAME[:totp]", help="import: field to secret, repeatable")
     c.set_defaults(func=cmd_secret)
 
     c = _sub("record")

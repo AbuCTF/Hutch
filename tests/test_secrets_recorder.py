@@ -229,3 +229,71 @@ async def test_recorded_otp_login_replays_with_a_fresh_code(base, tmp_path):
             assert result["ok"] and await page.title() == "in"
     finally:
         httpd.shutdown()
+
+
+class _TwoStep(http.server.BaseHTTPRequestHandler):
+    """Password page, then a code page under /auth/totp/, then the dashboard: the YesWeHack shape."""
+    def log_message(self, *a):
+        pass
+
+    def _page(self, body, cookie=None, location=None):
+        self.send_response(302 if location else 200)
+        if location:
+            self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/auth/login"):
+            return self._page(b"<form method=post action=/auth/login><input type=email name=email>"
+                              b"<input type=password name=password><button type=submit>Log in</button></form>")
+        if self.path.startswith("/auth/totp"):
+            return self._page(b"<form method=post action=/auth/totp/check><input autocomplete=one-time-code name=c>"
+                              b"<button type=submit>Verify</button></form>")
+        if "sid=ok" in self.headers.get("Cookie", ""):
+            return self._page(b"<h1>Welcome hunter</h1>")
+        return self._page(b"", location="/auth/login")
+
+    def do_POST(self):
+        body = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+        if self.path == "/auth/login":
+            ok = body.get("email") == ["me@hunter.test"] and body.get("password") == ["pw-1234"]
+            return self._page(b"", location="/auth/totp/abc" if ok else "/auth/login?bad")
+        code = body.get("c", [""])[0]
+        entry = json.load(open(secrets.path()))["ywh-otp"]
+        if code in (secrets.totp(entry), secrets.totp(entry, time.time() - 30)):
+            return self._page(b"", cookie="sid=ok; Path=/", location="/")
+        return self._page(b"invalid code")
+
+
+@pytest.mark.asyncio
+async def test_imported_platform_creds_log_in_through_a_code_page(base, tmp_path):
+    platforms = tmp_path / "platforms.json"
+    platforms.write_text(json.dumps({"yeswehack": {"username": "me@hunter.test", "password": "pw-1234",
+                                                   "totp_seed": "JBSWY3DPEHPK3PXP"}}))
+    stored = secrets.import_json(str(platforms), {"username": "ywh-email", "password": "ywh-pass",
+                                                  "totp_seed": "ywh-otp:totp"}, key="yeswehack",
+                                 domains=["127.0.0.1"])
+    assert stored == ["ywh-email", "ywh-pass", "ywh-otp"] and secrets.code("ywh-otp")
+    with pytest.raises(secrets.SecretError, match="'handle' is missing"):
+        secrets.import_json(str(platforms), {"handle": "x"}, key="yeswehack")
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _TwoStep)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    site = f"http://127.0.0.1:{httpd.server_address[1]}"
+    recipe = json.load(open(os.path.join(os.path.dirname(__file__), "..", "examples", "yeswehack-login.json")))
+    recipe["start"] = f"{site}/auth/login"
+    try:
+        async with Pool(base_dir=base) as pool:
+            s = await pool.create("ywh", headless=True)
+            await s.goto(site + "/")
+            result = await s.replay(recipe)
+            assert result["ok"], result
+            assert "/auth/" not in s._active_page().url and await s.inner_text("h1") == "Welcome hunter"
+            s.set_auth(site + "/", expect="Welcome")
+            assert (await s.auth_check())["state"] == "in"
+    finally:
+        httpd.shutdown()

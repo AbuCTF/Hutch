@@ -1209,8 +1209,15 @@ class Session:
         if a == "goto":
             await page.goto(step["url"])
         elif a == "wait_url":
-            want = step["url"].split("?")[0].split("#")[0]
-            await page.wait_for_url(lambda u: u.split("?")[0].split("#")[0] == want, timeout=timeout)
+            if step.get("not"):
+                await page.wait_for_url(lambda u: step["not"] not in u, timeout=timeout)
+            elif "*" in step["url"]:
+                await page.wait_for_url(step["url"], timeout=timeout)
+            else:
+                want = step["url"].split("?")[0].split("#")[0]
+                await page.wait_for_url(lambda u: u.split("?")[0].split("#")[0] == want, timeout=timeout)
+        elif a == "wait":
+            await page.wait_for_selector(sel, state="visible", timeout=step.get("timeout", timeout))
         elif a == "click":
             await page.click(sel, timeout=timeout)
         elif a == "fill":

@@ -135,6 +135,9 @@ hutch secret set acme-pass --domain acme.com     # prompted, stored 0600 in ~/.h
 hutch call bb-acme fill "#password" "{{acme-pass}}"
 hutch secret set ywh-otp --totp --domain yeswehack.com   # otpauth:// uri or base32 from the 2FA setup
 hutch secret code ywh-otp                        # current code; agents type {{ywh-otp}}
+hutch secret import ~/.secrets/platforms.json --key yeswehack --domain yeswehack.com \
+  --map username=ywh-email --map password=ywh-pass --map totp_seed=ywh-otp:totp   # nothing is printed
+hutch replay ywh examples/yeswehack-login.json  # password page, waits for the code page, types a fresh code
 hutch record bb-acme -o login.json               # do it in the window, Ctrl+C to stop
 hutch replay bb-acme login.json
 hutch export login.json > login.py               # standalone playwright, secrets from HUTCH_SECRET_<NAME>
@@ -146,6 +149,8 @@ hutch export login.json > login.py               # standalone playwright, secret
 - a secret bound to domains is refused on any other site, so a prompt-injected agent cannot type it elsewhere
 - recordings come from real DOM events, so a human in the window and an agent are recorded the same way;
   passwords become `{{password}}` (or the vault name) and are scrubbed from recorded URLs
+- recordings can wait for an element (`{"action": "wait", "selector": ...}`) or for the url to leave a
+  path (`{"action": "wait_url", "not": "/auth/"}`), which is what two-step logins need
 - screenshots are not redacted: a secret typed into a visible plain-text field shows in pixels Dialogs, downloads, file choosers, popups and crashes land in a
 per-session event log; new events are appended to every tool result, and `hutch_events` waits for
 them, answers the next dialog or sets files on an open chooser. Agent tabs accept alerts and
