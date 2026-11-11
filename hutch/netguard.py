@@ -10,7 +10,9 @@ Limits:
 - Chromium resolves names again after the check, so a DNS server that changes its answer between
   the two lookups could slip a request through. Use a strict proxy when that matters.
 - Requests a service worker makes on its own are not routed by Playwright, so they are not checked.
-- A session's own intercept rules run before this guard; a rule that continues a request skips it.
+- The guard runs before the session's intercept rules. A rule that rewrites a request's URL is
+  trusted, like any other rule the operator wrote. Routes added straight on a page with
+  page.route() run before the guard; use Session.intercept() instead.
 """
 
 import asyncio
@@ -85,7 +87,7 @@ class PrivateNetworkGuard:
     async def route(self, route):
         url = route.request.url
         if await self.allowed(url):
-            await route.continue_()
+            await route.fallback()  # on to the session's own intercept rules, if any match
         else:
             self._note(url)
             await route.abort("blockedbyclient")

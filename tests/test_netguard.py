@@ -206,3 +206,44 @@ async def test_guard_covers_tabs_opened_later(pool):
         with pytest.raises(Exception, match="ERR_BLOCKED_BY_CLIENT"):
             await second.goto(f"http://127.0.0.1:{server.port}/")
         assert server.hits == 0
+
+
+@pytest.mark.asyncio
+async def test_guard_covers_popups_from_their_first_request(pool):
+    async with _LocalServer() as server:
+        s = await pool.create("ng-popup", headless=True, block_private=True)
+        page = await s.new_page()
+        await page.goto("data:text/html,<p>opener</p>")
+        async with page.expect_popup() as info:
+            await page.evaluate(f"window.open('http://127.0.0.1:{server.port}/popup')")
+        await info.value
+        await asyncio.sleep(0.5)
+        assert server.hits == 0
+
+
+@pytest.mark.asyncio
+async def test_guard_runs_before_intercept_rules(pool):
+    async with _LocalServer() as server:
+        s = await pool.create("ng-rules", headless=True, block_private=True)
+
+        async def let_through(route):  # a rule that would happily continue anything
+            await route.continue_(headers={**route.request.headers, "x-test": "1"})
+
+        await s.intercept("**/*", let_through)
+        page = await s.new_page()
+        with pytest.raises(Exception, match="ERR_BLOCKED_BY_CLIENT"):
+            await page.goto(f"http://127.0.0.1:{server.port}/")
+        assert server.hits == 0
+
+
+@pytest.mark.asyncio
+async def test_allowed_requests_still_reach_intercept_rules(pool):
+    s = await pool.create("ng-fallback", headless=True, block_private=True)
+
+    async def answer(route):
+        await route.fulfill(status=200, content_type="text/html", body="<p>from the rule</p>")
+
+    await s.intercept("**/hutch-test", answer)
+    page = await s.new_page()
+    await page.goto("http://8.8.8.8/hutch-test")  # public literal: no lookup, never sent
+    assert "from the rule" in await page.content()

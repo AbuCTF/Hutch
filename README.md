@@ -336,6 +336,9 @@ for personas, with `playwright-stealth` installed:
 - font list shimming
 - WebRTC IP leak blocked
 
+client hints (`sec-ch-ua`, `-mobile`, `-platform`) match the persona from a tab's first request,
+popups included. They are also sent to plain-http sites, where Chrome itself sends none.
+
 not covered (chromium limitation): TLS fingerprint (JA3/JA4), HTTP/2 settings fingerprint.
 
 ### License

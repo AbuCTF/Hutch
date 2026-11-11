@@ -593,8 +593,7 @@ class Session:
         self._launched_at = time.time()
         self._last_activity = time.time()
         self.state = SessionState.ACTIVE
-        if self.block_private:
-            await self.block_private_networks()
+        await self._install_routes()
         await self._apply_persona()
         self._pages = self._context.pages[:]
         for page in self._pages:
@@ -604,7 +603,7 @@ class Session:
         # request carries the right sec-ch-ua, not racing the ensure_future in _setup_page.
         if self._spoof and self.fingerprint.user_agent:
             for page in self._pages:
-                await self._apply_ua_override(page)
+                await self._ua_override(page)
         def _on_new_page(page):
             self._pages.append(page)
             self._setup_page(page)
@@ -752,8 +751,9 @@ class Session:
                 f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{fp.platform}'}})"
             )
         if self.launcher == "native":
-            if fp.extra_headers:
-                await self._context.set_extra_http_headers(fp.extra_headers)
+            headers = {**self._client_hint_headers(), **(fp.extra_headers or {})}
+            if headers:
+                await self._context.set_extra_http_headers(headers)
             if fp.geolocation:
                 await self._context.grant_permissions(["geolocation"])
                 await self._context.set_geolocation(fp.geolocation)
@@ -797,15 +797,20 @@ class Session:
         if self.headless:
             self._claim(page)
         asyncio.ensure_future(self._remember_target(page))
-        # propagate intercept rules to new pages (popups, target=_blank, etc.)
-        # page.route() is async; batch into one coroutine with error handling
-        if self._intercept_rules:
-            asyncio.ensure_future(self._apply_intercept_rules(page))
         # match sec-ch-ua client-hints to the fingerprint (no HeadlessChrome leak)
         if self._spoof and self.fingerprint.user_agent:
-            asyncio.ensure_future(self._apply_ua_override(page))
+            self._ua_override(page)
         self._track_websockets(page)
         self._watch_hyprland_viewport(page)
+
+    def _ua_override(self, page):
+        """The page's one override task, started on first call; await it before the page's first
+        request so that request already carries the persona's client hints."""
+        task = getattr(page, "_hutch_ua_task", None)
+        if task is None:
+            task = asyncio.ensure_future(self._apply_ua_override(page))
+            page._hutch_ua_task = task
+        return task
 
     async def _apply_ua_override(self, page):
         """Pin the UA + sec-ch-ua client-hints + Accept-Language at the network layer via
@@ -833,24 +838,6 @@ class Session:
 
         page.on("load", resync_after_load)
         page._hutch_hyprland_viewport_watched = True
-
-    async def _apply_intercept_rules(self, page):
-        """Apply all stored intercept rules to a page.
-
-        Called via ensure_future from the sync _setup_page callback.
-        Playwright page.route() survives navigations within the same page,
-        so rules set here persist across in-page navigations automatically.
-        """
-        for pattern, handler in self._intercept_rules:
-            try:
-                await page.route(pattern, handler)
-            except Exception as exc:
-                if _is_disconnect(exc):
-                    return  # page gone, stop applying
-                _log.warning(
-                    "session '%s': failed to apply intercept %s: %s",
-                    self.name, pattern, exc,
-                )
 
     def _track_websockets(self, page):
         """Hook WebSocket events on a page for protocol analysis.
@@ -1036,6 +1023,8 @@ class Session:
         # _on_new_page handler (registered in launch()) appends the page
         # to self._pages and calls _setup_page -- no explicit append here
         page = await self._context.new_page()
+        if self._spoof and self.fingerprint.user_agent:
+            await self._ua_override(page)  # before the caller's first goto, not racing it
         self._focus = page
         self._claim(page)
         self._last_activity = time.time()
@@ -2558,12 +2547,26 @@ class Session:
             raise RuntimeError(f"session '{self.name}' is hibernated — relaunch first")
 
     async def intercept(self, pattern, handler):
+        """Route matching requests of every tab, including popups from their first request."""
         if not self._context:
             raise RuntimeError(f"session '{self.name}' not launched")
-        for page in self._pages:
-            if not page.is_closed():
-                await page.route(pattern, handler)
+        await self._context.route(pattern, handler)
         self._intercept_rules.append((pattern, handler))
+        await self._raise_net_guard()
+
+    async def _install_routes(self):
+        """Routes live on the browser context, so a fresh context (launch, relaunch, reattach) needs
+        them again: intercept rules first, the private-network guard last so it runs first."""
+        for pattern, handler in self._intercept_rules:
+            await self._context.route(pattern, handler)
+        if self.block_private:
+            await self.block_private_networks()
+
+    async def _raise_net_guard(self):
+        # playwright runs the newest matching route first; keep the guard newest
+        if self._net_guard is not None and self._net_guard_on is self._context:
+            await self._context.unroute("**/*", self._net_guard.route)
+            await self._context.route("**/*", self._net_guard.route)
 
     async def block_private_networks(self, resolver=None):
         """Refuse every request and WebSocket to loopback, private, link-local and other internal
@@ -2584,18 +2587,30 @@ class Session:
     async def set_extra_headers(self, headers):
         if not self._context:
             raise RuntimeError(f"session '{self.name}' not launched")
-        await self._context.set_extra_http_headers(headers)
+        await self._context.set_extra_http_headers({**self._client_hint_headers(), **headers})
+
+    def _client_hint_headers(self):
+        """The persona's low-entropy client hints as context-wide headers, for native sessions.
+        Playwright sets these on a new tab before it starts, so a popup's first request already
+        agrees with the persona; the per-tab CDP override (which also covers JS) lands just after.
+        Trade-off: they also go to plain-http sites, where Chrome itself sends none."""
+        if self.launcher != "native" or not (self._spoof and self.fingerprint.user_agent):
+            return {}
+        md = _ua_override_params(self.fingerprint)["userAgentMetadata"]
+        return {
+            "sec-ch-ua": ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in md["brands"]),
+            "sec-ch-ua-mobile": "?1" if md["mobile"] else "?0",
+            "sec-ch-ua-platform": f'"{md["platform"]}"',
+        }
 
     async def clear_intercepts(self):
-        if not self._context:
-            return
-        for pattern, handler in self._intercept_rules:
-            for page in self._pages:
-                if not page.is_closed():
-                    try:
-                        await page.unroute(pattern, handler)
-                    except Exception:
-                        pass
+        if self._context:
+            for pattern, handler in self._intercept_rules:
+                try:
+                    await self._context.unroute(pattern, handler)
+                except Exception as exc:
+                    if not _is_disconnect(exc):
+                        raise
         self._intercept_rules.clear()
 
     async def save_state(self):

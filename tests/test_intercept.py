@@ -171,3 +171,47 @@ class TestInterceptRPC:
         await s.block_urls(["**/ads*"])
         result = await s.clear_intercepts()
         assert result["cleared"] is True
+
+
+@pytest.mark.asyncio
+async def test_intercept_covers_popups_from_their_first_request(pool):
+    # regression: rules were added to new tabs asynchronously, so a popup's first request escaped
+    hits = []
+
+    async def handle(reader, writer):
+        line = await reader.readline()
+        if line:
+            hits.append(line.split()[1].decode())
+        body = b"<p>ok</p>"
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\n"
+                     b"Connection: close\r\n\r\n" % len(body) + body)
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        s = await pool.create("int-popup", headless=True)
+        page = await s.new_page()
+        await page.goto(f"http://127.0.0.1:{port}/start")
+
+        async def block(route):
+            await route.abort()
+
+        await s.intercept("**/secret*", block)
+        for i in range(3):
+            async with page.expect_popup() as info:
+                await page.evaluate(f"window.open('http://127.0.0.1:{port}/secret{i}')")
+            popup = await info.value
+            await asyncio.sleep(0.3)
+            await popup.close()
+        assert not [h for h in hits if h.startswith("/secret")]
+
+        await s.clear_intercepts()
+        async with page.expect_popup() as info:
+            await page.evaluate(f"window.open('http://127.0.0.1:{port}/secret-after-clear')")
+        await (await info.value).wait_for_load_state()
+        assert "/secret-after-clear" in hits
+    finally:
+        server.close()
+        await server.wait_closed()
