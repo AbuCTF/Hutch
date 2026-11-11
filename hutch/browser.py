@@ -300,10 +300,45 @@ _STRICT_ARGS = (
 )
 
 
+# the strip a maximised window leaves free on each desktop: taskbar, menu bar or top bar
+_WORK_AREA = {"windows": ("workAreaBottom", 48), "mac": ("workAreaTop", 25), "linux": ("workAreaTop", 32)}
+# blink's pointer and hover bitmasks: fine pointer + hover for a mouse, coarse + none for touch
+_POINTER = {
+    False: "--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2",
+    True: "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
+}
+
+
+def desktop_of(user_agent=None):
+    """windows, mac or linux: from the user agent when there is one, else from this machine."""
+    ua = user_agent or ""
+    if "Windows" in ua:
+        return "windows"
+    if "Macintosh" in ua or "Mac OS X" in ua:
+        return "mac"
+    if "Linux" in ua or "X11" in ua or "CrOS" in ua:
+        return "linux"
+    return {"win32": "windows", "darwin": "mac"}.get(sys.platform, "linux")
+
+
+def headless_display(screen, desktop, *, touch=False, window_size=None):
+    """Flags that give headless chromium a real screen and pointer, and the window that fits it.
+
+    Headless chromium reports an 800x600 screen behind a larger window and no pointing device,
+    both well-known headless tells. These switches fix them inside the browser, so no page
+    script is patched and nothing shows in workers or iframes.
+    """
+    width, height = screen
+    edge, inset = _WORK_AREA.get(desktop, _WORK_AREA["linux"])
+    work = (width, height - inset)
+    window = (min(window_size[0], work[0]), min(window_size[1], work[1])) if window_size else work
+    return [f"--screen-info={{0,0 {width}x{height} {edge}={inset}}}", _POINTER[bool(touch)]], window
+
+
 def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=None,
                proxy=None, proxy_bypass=None, strict_proxy=True, ignore_https_errors=False,
                window_size=None, lang=None, user_agent=None, window_class=None, maximize=True,
-               extra=()):
+               screen=None, touch=False, extra=()):
     args = [
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
@@ -317,6 +352,10 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
         args.append("--restore-last-session")
     if headless:
         args += ["--headless=new", "--hide-scrollbars", "--mute-audio"]
+        if screen:
+            display, window_size = headless_display(screen, desktop_of(user_agent), touch=touch,
+                                                    window_size=window_size)
+            args += display
     else:
         if window_class:
             args.append(f"--class={window_class}")

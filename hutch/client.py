@@ -621,7 +621,7 @@ class HutchClient:
     async def create(self, name, *, program=None, preset=None, proxy=None,
                      headless=True, ignore_https_errors=False,
                      locale=None, timezone=None, tags=None, caido=False,
-                     browser="chromium", block_private=False):
+                     browser="chromium", block_private=False, driver="playwright"):
         result = await self._call("create", {
             "name": name, "program": program, "preset": preset,
             "proxy": proxy, "headless": headless,
@@ -631,6 +631,7 @@ class HutchClient:
             "caido": caido,
             "browser": browser,
             "block_private": block_private,
+            "driver": driver,
         })
         return SessionHandle(self, name)
 

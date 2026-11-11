@@ -79,6 +79,8 @@ def _load(args, name, *, create=False):
             changed = True
         if getattr(args, "block_private", False) and not s.block_private:
             s.block_private, changed = True, True
+        if getattr(args, "driver", None) and args.driver != s.driver:
+            s.driver, changed = args.driver, True
         if changed:
             s._save_meta()
         return s
@@ -107,6 +109,7 @@ def _load(args, name, *, create=False):
         tags=tags,
         browser=getattr(args, "browser", None) or "chromium",
         block_private=getattr(args, "block_private", False),
+        driver=getattr(args, "driver", None) or "playwright",
     )
     print(f"created: {name}")
     return s
@@ -821,6 +824,9 @@ def main():
         c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
         c.add_argument("--block-private", action="store_true",
                        help="refuse requests to loopback, private and other internal addresses (sticks to the profile)")
+        c.add_argument("--driver", choices=("playwright", "patchright"),
+                       help="automation driver; patchright leaves no CDP traces for bot detectors "
+                            "(sticks to the profile)")
         if persona:
             c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
             c.add_argument("--program", metavar="NAME", help="deterministic persona per program")

@@ -6,9 +6,8 @@ from dataclasses import asdict
 from typing import Optional
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright
-
 from . import browser as _browser
+from . import driver as _driver
 from .caido import CaidoClient, CaidoConfig
 from .differ import diff_responses
 from .live import LiveServer
@@ -28,6 +27,7 @@ class Pool:
         self._launching = 0
         self._playwright = None
         self._pw_context = None
+        self._drivers = {}  # other drivers (patchright), started when a session first needs one
         self.caido = None
         self._live = None
 
@@ -36,9 +36,19 @@ class Pool:
     async def start(self):
         if self._pw_context:
             return
-        self._pw_context = async_playwright()
+        self._pw_context = _driver.async_playwright("playwright")()
         self._playwright = await self._pw_context.start()
         self._discover_existing()
+
+    async def _driver_for(self, session):
+        """The started driver this session runs on."""
+        if not self._playwright:
+            raise RuntimeError("pool not started")
+        if session.driver == "playwright":
+            return self._playwright
+        if session.driver not in self._drivers:
+            self._drivers[session.driver] = await _driver.async_playwright(session.driver)().start()
+        return self._drivers[session.driver]
 
     async def stop(self):
         for s in list(self._sessions.values()):
@@ -53,6 +63,9 @@ class Pool:
         if self._live:
             await self._live.stop()
             self._live = None
+        for other in self._drivers.values():
+            await other.stop()
+        self._drivers = {}
         if self._playwright:
             await self._playwright.stop()
         self._pw_context = None
@@ -86,7 +99,7 @@ class Pool:
                      headless=True, ignore_https_errors=False,
                      launch=True, tags=None, caido=False, launcher=None,
                      browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
-                     block_private=False):
+                     block_private=False, driver="playwright"):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -112,6 +125,7 @@ class Pool:
             strict_proxy=strict_proxy,
             require_proxy=require_proxy,
             block_private=block_private,
+            driver=driver,
         )
 
         if launch:
@@ -122,9 +136,7 @@ class Pool:
                     raise RuntimeError(
                         f"max {self.max_sessions} simultaneous sessions"
                     )
-                if not self._playwright:
-                    raise RuntimeError("pool not started")
-                await session.launch(self._playwright)
+                await session.launch(await self._driver_for(session))
             finally:
                 self._launching -= 1
 
@@ -141,12 +153,10 @@ class Pool:
                 session.headless = True if headless is None else headless
             self._launching += 1
             try:
-                if not self._playwright:
-                    raise RuntimeError("pool not started")
                 alive_count = sum(1 for s in self._sessions.values() if s.is_alive)
                 if alive_count + self._launching > self.max_sessions:
                     raise RuntimeError(f"max {self.max_sessions} simultaneous sessions")
-                await session.launch(self._playwright)
+                await session.launch(await self._driver_for(session))
             finally:
                 self._launching -= 1
         return session
@@ -174,9 +184,7 @@ class Pool:
 
     async def set_headless(self, name, headless):
         session = await self.get(name)
-        if not self._playwright:
-            raise RuntimeError("pool not started")
-        await session.set_headless(headless, self._playwright)
+        await session.set_headless(headless, await self._driver_for(session))
         return session
 
     def clone(self, src, dst):

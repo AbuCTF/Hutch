@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import os
+import platform
 import re
 import sys
 import shutil
@@ -14,15 +15,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from playwright._impl._errors import Error as PlaywrightError
-from playwright._impl._errors import TargetClosedError
-
 from . import browser as _browser
+from . import driver as _driver
 from .context import Context, Snapshot
 from .events import EventLog
 from . import recorder as _recorder
 from . import secrets as _secrets
 from . import snapshot as _snapshot
+
+# both drivers' error classes, so isinstance() and except clauses work under either
+PlaywrightError = _driver.ERRORS
+TargetClosedError = _driver.TARGET_CLOSED
 
 _log = logging.getLogger(__name__)
 
@@ -97,6 +100,7 @@ class ProxyConfig:
 
 
 _META_FILE = "hutch_meta.json"
+_UA_CACHE = "hutch_identity.json"  # the browser's own brands, read once per browser version
 
 _DISCONNECT_PATTERNS = (
     "browser has been closed",
@@ -191,6 +195,41 @@ def _ua_override_params(fp):
     }
 
 
+def _windows_platform_version():
+    # what Chrome reports: the UniversalApiContract version, which follows the Windows build
+    build = int((platform.version().split(".") + ["0", "0", "0"])[2] or 0)
+    return "19.0.0" if build >= 26100 else "15.0.0" if build >= 22621 else "14.0.0" if build >= 22000 else "10.0.0"
+
+
+def _real_ua_params(user_agent, brands, ua_platform, version):
+    """Override params carrying the real browser's identity, as a headed Chrome reports it."""
+    major = version.split(".", 1)[0]
+    machine = platform.machine().lower()
+    if ua_platform == "Windows":
+        platform_version = _windows_platform_version()
+    elif ua_platform == "macOS":
+        platform_version = ".".join((platform.mac_ver()[0].split(".") + ["0", "0"])[:3])
+    else:
+        platform_version = ""
+    return {
+        "userAgent": user_agent,
+        "userAgentMetadata": {
+            "brands": brands,
+            "fullVersionList": [{"brand": b["brand"],
+                                 "version": version if b["version"] == major else f"{b['version']}.0.0.0"}
+                                for b in brands],
+            "fullVersion": version,
+            "platform": ua_platform,
+            "platformVersion": platform_version,
+            "architecture": "arm" if machine.startswith(("arm", "aarch")) else "x86",
+            "model": "",
+            "mobile": False,
+            "bitness": "64" if machine.endswith("64") else "32",
+            "wow64": False,
+        },
+    }
+
+
 def _retry_on_disconnect(method=None, *, fallback=_SENTINEL):
     """Decorator: catch disconnect errors, recover page, retry once.
 
@@ -234,12 +273,15 @@ class Session:
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
                  browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
-                 block_private=False):
+                 block_private=False, driver="playwright"):
         self.name = name
+        # playwright, or patchright (no Runtime.enable / Console.enable traces); sticks to the profile
+        self.driver = _driver.check(driver or "playwright")
         # opt-in: refuse every request to loopback, private, link-local and other internal addresses
         self.block_private = block_private
         self._net_guard = None
         self._net_guard_on = None  # the context the guard's routes are installed on
+        self._net_proxy = None  # the local proxy that enforces the block where connections are made
         self.profile_dir = profile_dir
         self.proxy = proxy
         # with a proxy: nothing of chromium's own on it, loopback through it, never start without it
@@ -347,6 +389,7 @@ class Session:
             "require_proxy": self.require_proxy,
             "noise": self.noise,
             "block_private": self.block_private,
+            "driver": self.driver,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -401,6 +444,7 @@ class Session:
             strict_proxy=meta.get("strict_proxy", True),
             require_proxy=meta.get("require_proxy", False),
             block_private=meta.get("block_private", False),
+            driver=meta.get("driver", "playwright"),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -421,7 +465,7 @@ class Session:
             "--no-default-browser-check",
             "--remote-debugging-port=0",
         ]
-        if self.proxy and self.strict_proxy:
+        if (self.proxy and self.strict_proxy) or self._net_proxy:
             chrome_args += list(_browser._STRICT_ARGS)
         if not self.headless:
             chrome_args.append(f"--class={self._window_class()}")
@@ -470,6 +514,8 @@ class Session:
                 args["proxy"]["password"] = self.proxy.password
             if self.proxy.bypass:
                 args["proxy"]["bypass"] = self.proxy.bypass
+        elif self._net_proxy:
+            args["proxy"] = {"server": self._net_proxy.url, "bypass": "<-loopback>"}
         return args
 
     async def _hyprctl_json(self, resource):
@@ -576,6 +622,8 @@ class Session:
         if running and self.proxy and running.get("proxy") != self.proxy.server:
             raise RuntimeError(f"session '{self.name}' is open without its proxy {self.proxy.server} "
                                f"(running with {running.get('proxy') or 'none'}); stop it first")
+        if self.block_private and not self.endpoint and not self.proxy:
+            await self._start_net_proxy(running)
         if self.endpoint:
             ws = await asyncio.to_thread(_browser.resolve_endpoint, self.endpoint)
             await self._connect(playwright, {"ws": ws}, owned=False)
@@ -593,6 +641,9 @@ class Session:
         self._launched_at = time.time()
         self._last_activity = time.time()
         self.state = SessionState.ACTIVE
+        self._real_ua = None
+        if self.launcher == "native" and self.headless and not self.persona:
+            self._real_ua = await self._probe_real_ua()
         await self._install_routes()
         await self._apply_persona()
         self._pages = self._context.pages[:]
@@ -601,7 +652,7 @@ class Session:
         await asyncio.gather(*(self._remember_target(p) for p in self._pages))
         # apply the UA/client-hint override to initial pages NOW (awaited) so the first
         # request carries the right sec-ch-ua, not racing the ensure_future in _setup_page.
-        if self._spoof and self.fingerprint.user_agent:
+        if self._ua_params():
             for page in self._pages:
                 await self._ua_override(page)
         def _on_new_page(page):
@@ -646,6 +697,9 @@ class Session:
             kw["proxy"] = self.proxy.server
             kw["proxy_bypass"] = self.proxy.bypass
             kw["strict_proxy"] = self.strict_proxy
+        elif self._net_proxy:
+            kw["proxy"] = self._net_proxy.url
+            kw["strict_proxy"] = True  # loopback through it too, and none of chromium's own traffic
         extra, env = [], {}
         if fp.disable_webrtc:
             extra.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
@@ -656,6 +710,8 @@ class Session:
             kw["lang"] = fp.locale
             if self.headless:
                 kw["window_size"] = (fp.viewport_width, fp.viewport_height)
+                kw["screen"] = (fp.screen_width, fp.screen_height)
+                kw["touch"] = fp.has_touch or fp.is_mobile
             if fp.device_scale_factor and fp.device_scale_factor != 1.0:
                 extra.append(f"--force-device-scale-factor={fp.device_scale_factor}")
             if fp.color_scheme == "dark":
@@ -664,6 +720,7 @@ class Session:
                 env["TZ"] = fp.timezone
         elif self.headless:
             kw["window_size"] = (fp.viewport_width, fp.viewport_height)
+            kw["screen"] = (fp.screen_width, fp.screen_height)
         kw["extra"] = extra
         kw["env"] = env
         return kw
@@ -798,10 +855,54 @@ class Session:
             self._claim(page)
         asyncio.ensure_future(self._remember_target(page))
         # match sec-ch-ua client-hints to the fingerprint (no HeadlessChrome leak)
-        if self._spoof and self.fingerprint.user_agent:
+        if self._ua_params():
             self._ua_override(page)
         self._track_websockets(page)
         self._watch_hyprland_viewport(page)
+
+    def _ua_params(self):
+        """Network.setUserAgentOverride params for this session's pages, or None for no override."""
+        if self._spoof and self.fingerprint.user_agent:
+            return _ua_override_params(self.fingerprint)
+        return getattr(self, "_real_ua", None)
+
+    async def _probe_real_ua(self):
+        """The browser's own identity, for headless pages.
+
+        Headless chromium leaves HeadlessChrome out of its user agent only through the
+        --user-agent switch, and that switch blanks the high-entropy client hints a real
+        Chrome always reports (full version list, architecture, bitness). Read the brands
+        from a throwaway secure page, then give every page those values back through CDP.
+        """
+        version = self._browser.version
+        cache = os.path.join(self.profile_dir, _UA_CACHE)
+        with contextlib.suppress(OSError, ValueError):
+            with open(cache) as f:
+                seen = json.load(f)
+            if seen.get("version") == version and seen.get("brands"):
+                return _real_ua_params(seen["ua"], seen["brands"], seen["platform"], version)
+        if not self._owned:
+            return None  # never open a tab in a browser someone else is using; its starter cached this
+        page = await self._context.new_page()
+        try:
+            await page.route("https://hutch.invalid/**", lambda route: route.fulfill(
+                body="<!doctype html><title>hutch</title>", content_type="text/html"))
+            await page.goto("https://hutch.invalid/", wait_until="domcontentloaded", timeout=10000)
+            seen = await page.evaluate(
+                "({ua: navigator.userAgent, brands: navigator.userAgentData ? navigator.userAgentData.brands : null,"
+                " platform: navigator.userAgentData ? navigator.userAgentData.platform : ''})")
+        except Exception as exc:
+            _log.debug("session '%s': client-hint probe failed: %s", self.name, exc)
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await page.close()
+        if not seen.get("brands"):
+            return None
+        with contextlib.suppress(OSError):
+            with open(cache, "w") as f:
+                json.dump({**seen, "version": version}, f)
+        return _real_ua_params(seen["ua"], seen["brands"], seen["platform"], version)
 
     def _ua_override(self, page):
         """The page's one override task, started on first call; await it before the page's first
@@ -819,7 +920,7 @@ class Session:
             return
         try:
             cdp = await page.context.new_cdp_session(page)
-            await cdp.send("Network.setUserAgentOverride", _ua_override_params(self.fingerprint))
+            await cdp.send("Network.setUserAgentOverride", self._ua_params())
             # keep the CDP session ATTACHED — detaching reverts the override, re-leaking
             # HeadlessChrome. Store it on the page so it lives as long as the page does.
             page._hutch_ua_cdp = cdp
@@ -1023,7 +1124,7 @@ class Session:
         # _on_new_page handler (registered in launch()) appends the page
         # to self._pages and calls _setup_page -- no explicit append here
         page = await self._context.new_page()
-        if self._spoof and self.fingerprint.user_agent:
+        if self._ua_params():
             await self._ua_override(page)  # before the caller's first goto, not racing it
         self._focus = page
         self._claim(page)
@@ -1146,7 +1247,7 @@ class Session:
         for p in self._pages:
             if not p.is_closed():
                 try:
-                    await p.evaluate(_recorder.SCRIPT)
+                    await p.evaluate(_recorder.SCRIPT, **_driver.main_world(p))
                 except Exception:
                     pass
 
@@ -1618,7 +1719,7 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        return await page.evaluate(expression)
+        return await page.evaluate(expression, **_driver.main_world(page))
 
     @_retry_on_disconnect
     async def wait_for(self, selector=None, *, state="visible",
@@ -2028,7 +2129,7 @@ class Session:
             frame = page.frame(url=url)
         if not frame:
             raise RuntimeError("frame not found")
-        return await frame.evaluate(expression)
+        return await frame.evaluate(expression, **_driver.main_world(frame))
 
     @_retry_on_disconnect
     async def frame_click(self, selector, *, name=None, url=None):
@@ -2562,6 +2663,28 @@ class Session:
         if self.block_private:
             await self.block_private_networks()
 
+    async def _start_net_proxy(self, running):
+        """Start the private-network proxy. A browser that is already open must be using it."""
+        from .netproxy import PrivateNetworkProxy
+        port = 0
+        if running:
+            server = running.get("proxy") or ""
+            host, _, tail = server.rpartition("://")[2].partition(":")
+            if host != "127.0.0.1" or not tail.isdigit():
+                raise RuntimeError(f"session '{self.name}' is open without its private-network proxy; "
+                                   "stop it first")
+            port = int(tail)
+        if self._net_proxy and (not port or self._net_proxy.port == port):
+            return self._net_proxy
+        await self._stop_net_proxy()
+        self._net_proxy = await PrivateNetworkProxy().start(port)
+        return self._net_proxy
+
+    async def _stop_net_proxy(self):
+        if self._net_proxy:
+            proxy, self._net_proxy = self._net_proxy, None
+            await proxy.stop()
+
     async def _raise_net_guard(self):
         # playwright runs the newest matching route first; keep the guard newest
         if self._net_guard is not None and self._net_guard_on is self._context:
@@ -2579,10 +2702,19 @@ class Session:
         if self._net_guard is None:
             self._net_guard = PrivateNetworkGuard(resolver)
         if self._net_guard_on is not self._context:  # first time, or the browser was relaunched
+            patchright = self.driver == "patchright"
+            if patchright and not self._net_proxy:
+                # patchright cannot route WebSockets, so only the proxy can hold the line for them
+                raise RuntimeError(f"session '{self.name}': the private-network block on patchright needs "
+                                   "hutch's own proxy, which a session with an upstream proxy or an "
+                                   "attached browser cannot use")
             await self._context.route("**/*", self._net_guard.route)
-            await self._context.route_web_socket("**", self._net_guard.websocket)
+            if not patchright:
+                await self._context.route_web_socket("**", self._net_guard.websocket)
             self._net_guard_on = self._context
-        return {"block_private": True, "active": True, "blocked": list(self._net_guard.blocked[-10:])}
+        blocked = self._net_guard.blocked + (self._net_proxy.blocked if self._net_proxy else [])
+        return {"block_private": True, "active": True, "proxy": self._net_proxy is not None,
+                "blocked": blocked[-10:]}
 
     async def set_extra_headers(self, headers):
         if not self._context:
@@ -2673,6 +2805,8 @@ class Session:
                 self.context.clear()
             if self.state != SessionState.PAUSED:
                 self.state = SessionState.HIBERNATED
+            if not keep_browser:
+                await self._stop_net_proxy()
         finally:
             self._closing = False
 

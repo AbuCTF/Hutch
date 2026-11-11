@@ -6,13 +6,21 @@ request is refused unless every address is globally routable: no loopback, priva
 (including 169.254.169.254), shared, multicast, reserved or unspecified addresses, and no
 IPv4-mapped, NAT64, 6to4 or Teredo forms of them.
 
-Limits:
+This routing guard is the first line: it refuses early, with ERR_BLOCKED_BY_CLIENT. Sessions Hutch
+launches itself also send all traffic through ``netproxy.PrivateNetworkProxy``, which checks again
+where connections are made and connects only to the address it checked. That covers what routing
+cannot: DNS rebinding, requests a service worker makes on its own, WebSockets under patchright,
+and page.route() handlers that run before this guard.
+
+Without the proxy (an attached browser, or a session with its own upstream proxy) these limits
+remain:
 - Chromium resolves names again after the check, so a DNS server that changes its answer between
-  the two lookups could slip a request through. Use a strict proxy when that matters.
+  the two lookups could slip a request through.
 - Requests a service worker makes on its own are not routed by Playwright, so they are not checked.
-- The guard runs before the session's intercept rules. A rule that rewrites a request's URL is
-  trusted, like any other rule the operator wrote. Routes added straight on a page with
-  page.route() run before the guard; use Session.intercept() instead.
+- Routes added straight on a page with page.route() run before the guard; use Session.intercept().
+
+Either way the guard runs before the session's intercept rules, and a rule that rewrites a
+request's URL is trusted, like any other rule the operator wrote.
 """
 
 import asyncio

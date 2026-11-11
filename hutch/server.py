@@ -9,6 +9,7 @@ from dataclasses import asdict
 
 from . import __version__, commands, secrets
 from . import browser as _browser
+from . import driver as _driver
 from .artifacts import ArtifactStore
 from .context import Snapshot, Diff
 from .fingerprint import generate, generate_for_program
@@ -354,6 +355,7 @@ class HutchDaemon:
             strict_proxy=params.get("strict_proxy", True),
             require_proxy=params.get("require_proxy", False),
             block_private=params.get("block_private", False),
+            driver=params.get("driver") or "playwright",
         )
         self._get_health(name)
         return _session_info(s)
@@ -454,7 +456,7 @@ class HutchDaemon:
 
     async def _rpc_evaluate(self, params):
         _, page = await self._get_page(params["name"])
-        result = await page.evaluate(params["expression"])
+        result = await page.evaluate(params["expression"], **_driver.main_world(page))
         return {"result": result}
 
     async def _rpc_snapshot(self, params):
@@ -951,6 +953,7 @@ def _session_info(s):
         "owned": s._owned if s.is_alive else None,
         "running": s.running,
         "block_private": s.block_private,
+        "driver": s.driver,
     }
 
 

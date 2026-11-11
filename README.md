@@ -183,6 +183,7 @@ Under WSL the Windows browser listens on Windows' 127.0.0.1, which WSL only reac
 hutch create target-a --preset win-desktop-1080p    # persona: fake but coherent fingerprint
 hutch create target-a --proxy http://127.0.0.1:8081 --ignore-https-errors
 hutch create reader --block-private                  # for untrusted URLs: no localhost, LAN or metadata
+hutch create quiet --driver patchright --browser chrome  # fewest automation traces
 hutch list
 hutch screenshot target-a evidence.png --full-page
 hutch destroy target-a
@@ -301,7 +302,8 @@ async with HutchClient() as client:
 | **Page state** | URL + title + ref snapshot returned after every action |
 | **Smart waits** | Click waits for networkidle; configurable strategies |
 | **Request interception** | Modify headers, block URLs, swap auth tokens |
-| **Private network block** | Opt-in `block_private`: refuse loopback, LAN, link-local and metadata addresses, for sessions that open untrusted URLs |
+| **Private network block** | Opt-in `block_private`: refuse loopback, LAN, link-local and metadata addresses, for sessions that open untrusted URLs. Checked per request, then again by a local proxy that connects only to the address it checked (no DNS rebinding, service workers covered) |
+| **Stealth driver** | Opt-in `driver: patchright` per session: no `Runtime.enable` or `Console.enable` traces, scripts evaluated out of the page's sight |
 | **Cookie/storage API** | Get/set/delete cookies and localStorage |
 | **Health monitoring** | Auto-detect captcha, auth expiry, rate limiting |
 | **HITL handoff** | Auto-pause on challenges, human solves, agent resumes |
@@ -309,7 +311,7 @@ async with HutchClient() as client:
 | **Compare** | Diff responses across sessions for authz testing |
 | **Daemon mode** | Unix socket JSON-RPC server for agent integration |
 | **Artifacts** | HAR exports, screenshots, snapshots, agent notes |
-| **Stealth** | WebDriver flag, WebGL, canvas, plugins, WebRTC |
+| **Headless that looks headed** | Real screen size with a taskbar, a mouse pointer, full client hints; set inside the browser, no page script patched |
 
 ### Fingerprint presets (personas)
 
@@ -329,17 +331,39 @@ each preset bundles a matching UA, platform, screen, locale, and timezone.
 
 ### Stealth
 
-for personas, with `playwright-stealth` installed:
-- `navigator.webdriver` → false
-- WebGL / canvas noise
-- plugin array spoofing
-- font list shimming
-- WebRTC IP leak blocked
+Without a persona, a session is the real browser with nothing spoofed. The tells that remain come
+from automation itself, and three opt-ins remove them:
 
-client hints (`sec-ch-ua`, `-mobile`, `-platform`) match the persona from a tab's first request,
-popups included. They are also sent to plain-http sites, where Chrome itself sends none.
+- **`driver: patchright`** (`--driver patchright`, `pip install 'hutch[patchright]'`) drives the
+  browser without `Runtime.enable` and `Console.enable`, the CDP calls detectors probe for, and runs
+  Hutch's own scripts in an isolated world. Costs: no console messages in `observe`, and
+  `evaluate` reaches page globals only because Hutch asks for the main world explicitly.
+- **Google Chrome instead of the bundled Chromium** (`--browser chrome`): detectors treat a
+  Chromium without the `Google Chrome` brand as a test build.
+- **Headless display** is automatic: `--screen-info` gives headless a real screen with a taskbar,
+  `--blink-settings` gives it a mouse, and pages get back the full client hints (version list,
+  architecture, bitness) that the user-agent switch would otherwise blank.
 
-not covered (chromium limitation): TLS fingerprint (JA3/JA4), HTTP/2 settings fingerprint.
+Measured on 2026-11-11, headless, Linux (WSL2), no persona:
+
+| Check | playwright + bundled Chromium | patchright + Google Chrome 157 |
+|-------|-------------------------------|--------------------------------|
+| [rebrowser bot-detector](https://bot-detector.rebrowser.net/) | 2 red: `runtimeEnableLeak`, `sourceUrlLeak` | all green |
+| [deviceandbrowserinfo](https://deviceandbrowserinfo.com/are_you_a_bot) | bot (CDP detected) | human |
+| [BrowserScan](https://www.browserscan.net/bot-detection) | Normal | Normal |
+| [sannysoft](https://bot.sannysoft.com/) | 0 failed | 0 failed |
+| [CreepJS](https://abrahamjuliot.github.io/creepjs/) headless / stealth | 0% / 0% | 0% / 0% |
+
+What these pages cannot see, and what still decides real sites: IP reputation, timezone and
+language against the IP's location (run with `TZ` set to where you are; WSL defaults to UTC), a
+working GPU (WSL2 has no WebGL in headless), and how the session behaves. No test page stands in
+for a real protected site.
+
+Personas add a coherent foreign identity on top; with `playwright-stealth` installed they also
+patch `navigator` properties in page scripts, which detectors can notice. Client hints
+(`sec-ch-ua`, `-mobile`, `-platform`) match the persona from a tab's first request, popups
+included; they are also sent to plain-http sites, where Chrome itself sends none. TLS and HTTP/2
+fingerprints are always the real browser's, which is why personas are version-matched to it.
 
 ### License
 

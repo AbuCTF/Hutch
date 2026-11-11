@@ -102,6 +102,7 @@ def create_mcp_server():
             "owned": s._owned if s.is_alive else None,
             "running": s.running,
             "block_private": s.block_private,
+            "driver": s.driver,
         }
 
     def _state(result) -> str:
@@ -194,6 +195,13 @@ def create_mcp_server():
                             "default": False,
                             "description": "Refuse requests to loopback, private and other internal "
                                            "addresses, for untrusted URLs (create only)",
+                        },
+                        "driver": {
+                            "type": "string",
+                            "enum": ["playwright", "patchright"],
+                            "default": "playwright",
+                            "description": "patchright leaves no CDP traces for bot detectors, "
+                                           "but shows no console messages (create only)",
                         },
                         "tags": {
                             "type": "object",
@@ -693,6 +701,7 @@ def create_mcp_server():
                     caido=arguments.get("caido", False),
                     browser=arguments.get("browser") or "chromium",
                     block_private=arguments.get("block_private", False),
+                    driver=arguments.get("driver") or "playwright",
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
 
