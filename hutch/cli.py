@@ -77,6 +77,8 @@ def _load(args, name, *, create=False):
             s.proxy = _resolve_proxy(args)
             s.ignore_https_errors = s.ignore_https_errors or args.ignore_https_errors
             changed = True
+        if getattr(args, "block_private", False) and not s.block_private:
+            s.block_private, changed = True, True
         if changed:
             s._save_meta()
         return s
@@ -104,6 +106,7 @@ def _load(args, name, *, create=False):
         ignore_https_errors=getattr(args, "ignore_https_errors", False),
         tags=tags,
         browser=getattr(args, "browser", None) or "chromium",
+        block_private=getattr(args, "block_private", False),
     )
     print(f"created: {name}")
     return s
@@ -816,6 +819,8 @@ def main():
                        metavar="PORT", help="route through Caido, default port 8080")
         c.add_argument("--bypass", metavar="HOSTS", help="proxy bypass list")
         c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
+        c.add_argument("--block-private", action="store_true",
+                       help="refuse requests to loopback, private and other internal addresses (sticks to the profile)")
         if persona:
             c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
             c.add_argument("--program", metavar="NAME", help="deterministic persona per program")

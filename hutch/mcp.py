@@ -101,6 +101,7 @@ def create_mcp_server():
             "browser": s.browser,
             "owned": s._owned if s.is_alive else None,
             "running": s.running,
+            "block_private": s.block_private,
         }
 
     def _state(result) -> str:
@@ -187,6 +188,12 @@ def create_mcp_server():
                             "type": "boolean",
                             "default": False,
                             "description": "Route through Caido proxy (create only)",
+                        },
+                        "block_private": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Refuse requests to loopback, private and other internal "
+                                           "addresses, for untrusted URLs (create only)",
                         },
                         "tags": {
                             "type": "object",
@@ -685,6 +692,7 @@ def create_mcp_server():
                     tags=arguments.get("tags", {}),
                     caido=arguments.get("caido", False),
                     browser=arguments.get("browser") or "chromium",
+                    block_private=arguments.get("block_private", False),
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
 

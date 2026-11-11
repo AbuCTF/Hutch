@@ -182,6 +182,7 @@ Under WSL the Windows browser listens on Windows' 127.0.0.1, which WSL only reac
 ```bash
 hutch create target-a --preset win-desktop-1080p    # persona: fake but coherent fingerprint
 hutch create target-a --proxy http://127.0.0.1:8081 --ignore-https-errors
+hutch create reader --block-private                  # for untrusted URLs: no localhost, LAN or metadata
 hutch list
 hutch screenshot target-a evidence.png --full-page
 hutch destroy target-a
@@ -300,6 +301,7 @@ async with HutchClient() as client:
 | **Page state** | URL + title + ref snapshot returned after every action |
 | **Smart waits** | Click waits for networkidle; configurable strategies |
 | **Request interception** | Modify headers, block URLs, swap auth tokens |
+| **Private network block** | Opt-in `block_private`: refuse loopback, LAN, link-local and metadata addresses, for sessions that open untrusted URLs |
 | **Cookie/storage API** | Get/set/delete cookies and localStorage |
 | **Health monitoring** | Auto-detect captcha, auth expiry, rate limiting |
 | **HITL handoff** | Auto-pause on challenges, human solves, agent resumes |

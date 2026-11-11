@@ -353,6 +353,7 @@ class HutchDaemon:
             browser=params.get("browser", "chromium"),
             strict_proxy=params.get("strict_proxy", True),
             require_proxy=params.get("require_proxy", False),
+            block_private=params.get("block_private", False),
         )
         self._get_health(name)
         return _session_info(s)
@@ -949,6 +950,7 @@ def _session_info(s):
         "browser": s.browser,
         "owned": s._owned if s.is_alive else None,
         "running": s.running,
+        "block_private": s.block_private,
     }
 
 

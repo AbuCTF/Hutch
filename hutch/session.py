@@ -233,8 +233,13 @@ class Session:
                  proxy=None, fingerprint=None, headless=True,
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
-                 browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False):
+                 browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
+                 block_private=False):
         self.name = name
+        # opt-in: refuse every request to loopback, private, link-local and other internal addresses
+        self.block_private = block_private
+        self._net_guard = None
+        self._net_guard_on = None  # the context the guard's routes are installed on
         self.profile_dir = profile_dir
         self.proxy = proxy
         # with a proxy: nothing of chromium's own on it, loopback through it, never start without it
@@ -341,6 +346,7 @@ class Session:
             "strict_proxy": self.strict_proxy,
             "require_proxy": self.require_proxy,
             "noise": self.noise,
+            "block_private": self.block_private,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -394,6 +400,7 @@ class Session:
             endpoint=meta.get("endpoint"),
             strict_proxy=meta.get("strict_proxy", True),
             require_proxy=meta.get("require_proxy", False),
+            block_private=meta.get("block_private", False),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -586,6 +593,8 @@ class Session:
         self._launched_at = time.time()
         self._last_activity = time.time()
         self.state = SessionState.ACTIVE
+        if self.block_private:
+            await self.block_private_networks()
         await self._apply_persona()
         self._pages = self._context.pages[:]
         for page in self._pages:
@@ -2555,6 +2564,22 @@ class Session:
             if not page.is_closed():
                 await page.route(pattern, handler)
         self._intercept_rules.append((pattern, handler))
+
+    async def block_private_networks(self, resolver=None):
+        """Refuse every request and WebSocket to loopback, private, link-local and other internal
+        addresses, for sessions that open URLs from untrusted sources. Covers every tab, including
+        ones opened later. Idempotent."""
+        from .netguard import PrivateNetworkGuard
+        self.block_private = True
+        if not self._context:
+            return {"block_private": True, "active": False}
+        if self._net_guard is None:
+            self._net_guard = PrivateNetworkGuard(resolver)
+        if self._net_guard_on is not self._context:  # first time, or the browser was relaunched
+            await self._context.route("**/*", self._net_guard.route)
+            await self._context.route_web_socket("**", self._net_guard.websocket)
+            self._net_guard_on = self._context
+        return {"block_private": True, "active": True, "blocked": list(self._net_guard.blocked[-10:])}
 
     async def set_extra_headers(self, headers):
         if not self._context:
