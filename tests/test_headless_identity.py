@@ -94,3 +94,20 @@ async def test_patchright_evaluate_still_reaches_page_globals(pool):
         body="<script>window.appState = {ready: true}</script>", content_type="text/html"))
     await page.goto("https://globals.test/")
     assert await s.evaluate("window.appState && window.appState.ready") is True
+
+
+def test_wsl_on_utc_reports_the_windows_zone(tmp_path, monkeypatch):
+    from hutch import tz
+
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(tz._browser, "is_wsl", lambda: True)
+    monkeypatch.setattr(tz, "_windows_zone_id", lambda: "India Standard Time")
+    monkeypatch.setattr(tz.time, "localtime", lambda *a: type("T", (), {"tm_gmtoff": 0})())
+    assert tz.host_timezone() == "Asia/Kolkata"
+    kw = Session("tz", str(tmp_path / "tz"), headless=True).spawn_options()
+    assert kw["env"]["TZ"] == "Asia/Kolkata" and kw["screen"] == (1920, 1080)
+    monkeypatch.setenv("TZ", "Europe/Paris")  # an explicit TZ always wins
+    assert tz.host_timezone() is None
+    monkeypatch.delenv("TZ")
+    monkeypatch.setattr(tz._browser, "is_wsl", lambda: False)  # elsewhere the system zone is inherited
+    assert tz.host_timezone() is None

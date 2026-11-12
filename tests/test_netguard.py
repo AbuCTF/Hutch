@@ -247,3 +247,21 @@ async def test_allowed_requests_still_reach_intercept_rules(pool):
     page = await s.new_page()
     await page.goto("http://8.8.8.8/hutch-test")  # public literal: no lookup, never sent
     assert "from the rule" in await page.content()
+
+
+@pytest.mark.asyncio
+async def test_a_hung_dns_lookup_times_out_and_is_refused(monkeypatch):
+    import threading
+    import time
+
+    from hutch import netguard
+
+    release = threading.Event()
+    monkeypatch.setattr(netguard.socket, "getaddrinfo", lambda *a, **k: (release.wait(), [])[1])
+    started = time.monotonic()
+    with pytest.raises(OSError, match="timed out"):
+        await netguard._system_resolve("hang.test", 443, timeout=0.2)
+    assert time.monotonic() - started < 2
+    guard = netguard.PrivateNetworkGuard(resolver=lambda h, p: netguard._system_resolve(h, p, timeout=0.2))
+    assert await guard.allowed("https://hang.test/") is False  # unresolvable means refused
+    release.set()  # let the daemon threads finish

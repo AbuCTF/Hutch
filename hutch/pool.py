@@ -99,7 +99,7 @@ class Pool:
                      headless=True, ignore_https_errors=False,
                      launch=True, tags=None, caido=False, launcher=None,
                      browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
-                     block_private=False, driver="playwright"):
+                     block_private=False, driver="playwright", humanize=False):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -126,6 +126,7 @@ class Pool:
             require_proxy=require_proxy,
             block_private=block_private,
             driver=driver,
+            humanize=humanize,
         )
 
         if launch:

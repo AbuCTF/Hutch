@@ -184,6 +184,7 @@ hutch create target-a --preset win-desktop-1080p    # persona: fake but coherent
 hutch create target-a --proxy http://127.0.0.1:8081 --ignore-https-errors
 hutch create reader --block-private                  # for untrusted URLs: no localhost, LAN or metadata
 hutch create quiet --driver patchright --browser chrome  # fewest automation traces
+hutch create hand --humanize                         # move, click, type and scroll like a person
 hutch list
 hutch screenshot target-a evidence.png --full-page
 hutch destroy target-a
@@ -311,6 +312,7 @@ async with HutchClient() as client:
 | **Compare** | Diff responses across sessions for authz testing |
 | **Daemon mode** | Unix socket JSON-RPC server for agent integration |
 | **Artifacts** | HAR exports, screenshots, snapshots, agent notes |
+| **Human input** | Opt-in `humanize`: curved, Fitts's-law-timed mouse paths with overshoot, off-centre clicks with a real hold, varied typing rhythm, wheel-notch scrolling |
 | **Headless that looks headed** | Real screen size with a taskbar, a mouse pointer, full client hints; set inside the browser, no page script patched |
 
 ### Fingerprint presets (personas)
@@ -344,6 +346,13 @@ from automation itself, and three opt-ins remove them:
   `--blink-settings` gives it a mouse, and pages get back the full client hints (version list,
   architecture, bitness) that the user-agent switch would otherwise blank.
 
+- **`humanize`** (`--humanize`) replaces teleporting clicks and constant-rate typing with a
+  hand's movement: curved paths timed by Fitts's law, an overshoot and correction on long moves,
+  clicks near but not on the centre with a 55-130 ms hold, log-normal gaps between keys with
+  pauses between words, and scrolling in 100 px wheel notches. Every event is a real, trusted
+  input event. It hedges against simple behavioural rules; it is not cover against vendors that
+  model a whole session, so hand those steps to a person.
+
 Measured on 2026-11-11, headless, Linux (WSL2), no persona:
 
 | Check | playwright + bundled Chromium | patchright + Google Chrome 157 |
@@ -354,10 +363,15 @@ Measured on 2026-11-11, headless, Linux (WSL2), no persona:
 | [sannysoft](https://bot.sannysoft.com/) | 0 failed | 0 failed |
 | [CreepJS](https://abrahamjuliot.github.io/creepjs/) headless / stealth | 0% / 0% | 0% / 0% |
 
-What these pages cannot see, and what still decides real sites: IP reputation, timezone and
-language against the IP's location (run with `TZ` set to where you are; WSL defaults to UTC), a
-working GPU (WSL2 has no WebGL in headless), and how the session behaves. No test page stands in
-for a real protected site.
+What these pages cannot see, and what still decides real sites: IP reputation, the time zone and
+language against the IP's location, a working GPU (WSL2 has no WebGL in headless), and how the
+session behaves. No test page stands in for a real protected site.
+
+The time zone matters more than it looks. On 2026-11-11 two Cloudflare-protected sites blocked a
+headless session from an Indian IP every time it reported UTC, and let it in on most tries once it
+reported India time. A desktop's browser inherits the right zone; WSL often runs on UTC, so under
+WSL Hutch asks Windows for its zone and gives browsers that one. `TZ` in the environment and a
+persona's time zone always win.
 
 Personas add a coherent foreign identity on top; with `playwright-stealth` installed they also
 patch `navigator` properties in page scripts, which detectors can notice. Client hints

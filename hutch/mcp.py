@@ -103,6 +103,7 @@ def create_mcp_server():
             "running": s.running,
             "block_private": s.block_private,
             "driver": s.driver,
+            "humanize": s.humanize,
         }
 
     def _state(result) -> str:
@@ -195,6 +196,12 @@ def create_mcp_server():
                             "default": False,
                             "description": "Refuse requests to loopback, private and other internal "
                                            "addresses, for untrusted URLs (create only)",
+                        },
+                        "humanize": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Move, click, type and scroll with a person's timing "
+                                           "instead of teleporting (create only)",
                         },
                         "driver": {
                             "type": "string",
@@ -702,6 +709,7 @@ def create_mcp_server():
                     browser=arguments.get("browser") or "chromium",
                     block_private=arguments.get("block_private", False),
                     driver=arguments.get("driver") or "playwright",
+                    humanize=arguments.get("humanize", False),
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
 

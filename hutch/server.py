@@ -356,6 +356,7 @@ class HutchDaemon:
             require_proxy=params.get("require_proxy", False),
             block_private=params.get("block_private", False),
             driver=params.get("driver") or "playwright",
+            humanize=params.get("humanize", False),
         )
         self._get_health(name)
         return _session_info(s)
@@ -954,6 +955,7 @@ def _session_info(s):
         "running": s.running,
         "block_private": s.block_private,
         "driver": s.driver,
+        "humanize": s.humanize,
     }
 
 

@@ -26,6 +26,7 @@ request's URL is trusted, like any other rule the operator wrote.
 import asyncio
 import ipaddress
 import socket
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -50,10 +51,49 @@ def is_public_ip(ip):
     return bool(ip.is_global) and not (ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
-async def _system_resolve(host, port):
+DNS_TIMEOUT = 5.0
+_DNS_SLOTS = threading.BoundedSemaphore(64)
+
+
+def _deliver(loop, fut, result, exc):
+    def done():
+        if not fut.done():
+            fut.set_exception(exc) if exc else fut.set_result(result)
+    try:
+        loop.call_soon_threadsafe(done)
+    except RuntimeError:
+        pass  # the loop has closed; nobody is waiting
+
+
+async def _system_resolve(host, port, timeout=DNS_TIMEOUT):
+    """getaddrinfo with a deadline. A timeout counts as unresolvable, so the caller refuses.
+
+    Some resolvers (WSL's DNS tunnel, for one) can leave a lookup hanging for good. asyncio's own
+    getaddrinfo runs in the shared executor, where a hung lookup holds a worker forever and makes
+    the program wait for it at exit. These lookups run in daemon threads instead, so a hung one
+    costs one idle thread and nothing else.
+    """
     loop = asyncio.get_running_loop()
-    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    return list(dict.fromkeys(str(info[4][0]).split("%", 1)[0] for info in infos))
+    fut = loop.create_future()
+
+    def work():
+        if not _DNS_SLOTS.acquire(timeout=timeout):
+            _deliver(loop, fut, None, OSError("too many DNS lookups in flight"))
+            return
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except Exception as exc:  # anything else from the resolver counts as unresolvable too
+            _deliver(loop, fut, None, exc if isinstance(exc, OSError) else OSError(str(exc)))
+        else:
+            _deliver(loop, fut, list(dict.fromkeys(str(i[4][0]).split("%", 1)[0] for i in infos)), None)
+        finally:
+            _DNS_SLOTS.release()
+
+    threading.Thread(target=work, name=f"hutch-dns {host}", daemon=True).start()
+    try:
+        return await asyncio.wait_for(fut, timeout)
+    except asyncio.TimeoutError:
+        raise OSError(f"DNS lookup for {host} timed out after {timeout:.0f}s") from None
 
 
 class PrivateNetworkGuard:

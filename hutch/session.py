@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import sys
 import shutil
@@ -17,6 +18,8 @@ from typing import Optional
 
 from . import browser as _browser
 from . import driver as _driver
+from . import human as _human
+from . import tz as _tz
 from .context import Context, Snapshot
 from .events import EventLog
 from . import recorder as _recorder
@@ -273,8 +276,10 @@ class Session:
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
                  browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
-                 block_private=False, driver="playwright"):
+                 block_private=False, driver="playwright", humanize=False):
         self.name = name
+        # move, click, type and scroll with a person's timing instead of teleporting; sticks to the profile
+        self.humanize = humanize
         # playwright, or patchright (no Runtime.enable / Console.enable traces); sticks to the profile
         self.driver = _driver.check(driver or "playwright")
         # opt-in: refuse every request to loopback, private, link-local and other internal addresses
@@ -390,6 +395,7 @@ class Session:
             "noise": self.noise,
             "block_private": self.block_private,
             "driver": self.driver,
+            "humanize": self.humanize,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -445,6 +451,7 @@ class Session:
             require_proxy=meta.get("require_proxy", False),
             block_private=meta.get("block_private", False),
             driver=meta.get("driver", "playwright"),
+            humanize=meta.get("humanize", False),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -487,7 +494,7 @@ class Session:
             "viewport": None if not self.headless else {"width": fp.viewport_width, "height": fp.viewport_height},
             "screen": {"width": fp.screen_width, "height": fp.screen_height},
             "locale": fp.locale,
-            "timezone_id": fp.timezone,
+            "timezone_id": fp.timezone if self.persona else _tz.host_timezone(),
             "color_scheme": fp.color_scheme,
             "device_scale_factor": fp.device_scale_factor,
             "has_touch": fp.has_touch,
@@ -721,6 +728,8 @@ class Session:
         elif self.headless:
             kw["window_size"] = (fp.viewport_width, fp.viewport_height)
             kw["screen"] = (fp.screen_width, fp.screen_height)
+        if "TZ" not in env and (zone := _tz.host_timezone()):
+            env["TZ"] = zone  # WSL on UTC: report the zone Windows knows, as the IP's location implies
         kw["extra"] = extra
         kw["env"] = env
         return kw
@@ -1663,7 +1672,10 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.click(_ref(selector))
+        if self.humanize:
+            await _human.click(page, page.locator(_ref(selector)).first)
+        else:
+            await page.click(_ref(selector))
         if wait_after:
             try:
                 await page.wait_for_load_state(wait_after, timeout=timeout)
@@ -1678,7 +1690,13 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.fill(_ref(selector), self._secret(value, page))
+        if self.humanize:
+            field = page.locator(_ref(selector)).first
+            await field.fill("")
+            await _human.click(page, field)
+            await _human.type_text(page, self._secret(value, page))
+        else:
+            await page.fill(_ref(selector), self._secret(value, page))
         if press_enter:
             await page.press(_ref(selector), "Enter")
         return await self.page_state()
@@ -1690,7 +1708,11 @@ class Session:
         if not page:
             raise RuntimeError(f"session '{self.name}' has no open page")
         self._last_activity = time.time()
-        await page.type(_ref(selector), self._secret(text, page), delay=delay)
+        if self.humanize:
+            await _human.click(page, page.locator(_ref(selector)).first)
+            await _human.type_text(page, self._secret(text, page))
+        else:
+            await page.type(_ref(selector), self._secret(text, page), delay=delay)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -1998,7 +2020,10 @@ class Session:
                 delta_x = amount
             elif direction == "left":
                 delta_x = -amount
-            await page.mouse.wheel(delta_x, delta_y)
+            if self.humanize and delta_y:
+                await _human.scroll(page, delta_y)
+            else:
+                await page.mouse.wheel(delta_x, delta_y)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -2545,8 +2570,13 @@ class Session:
     @_retry_on_disconnect
     async def mouse_click(self, x, y, *, button="left", click_count=1, delay=0):
         page = self._require_page()
-        await page.mouse.click(x, y, button=button, click_count=click_count,
-                               delay=delay)
+        if self.humanize:
+            await _human.move(page, x, y)
+            await page.mouse.click(x, y, button=button, click_count=click_count,
+                                   delay=delay or random.uniform(55, 130))
+        else:
+            await page.mouse.click(x, y, button=button, click_count=click_count,
+                                   delay=delay)
         return await self.page_state()
 
     @_retry_on_disconnect
@@ -2558,7 +2588,10 @@ class Session:
     @_retry_on_disconnect
     async def mouse_move(self, x, y, *, steps=1):
         page = self._require_page()
-        await page.mouse.move(x, y, steps=steps)
+        if self.humanize:
+            await _human.move(page, x, y)
+        else:
+            await page.mouse.move(x, y, steps=steps)
 
     @_retry_on_disconnect
     async def mouse_down(self, *, button="left"):
