@@ -10,6 +10,10 @@ checked. That closes what request routing alone leaves open:
 - requests a service worker makes on its own, which Playwright does not route;
 - WebSockets under the patchright driver, which has no WebSocket routing.
 
+An operator can also give it a deny check (``Session.deny_hosts``): hosts that must never be
+contacted at all, such as a bug-bounty program's targets from a research tool. Those are refused
+here too, before any lookup, for every request the browser makes.
+
 HTTPS and WebSockets arrive as CONNECT tunnels; the proxy never sees inside them. Plain HTTP
 requests are forwarded one per connection. The proxy listens on loopback only and talks only to
 the browser that was started with it.
@@ -28,6 +32,10 @@ _MAX_HEAD = 64 * 1024
 
 
 class _Refused(Exception):
+    pass
+
+
+class _Denied(_Refused):
     pass
 
 
@@ -51,6 +59,7 @@ class PrivateNetworkProxy:
         self.host = host
         self.port = None
         self.blocked = []  # refused host:port, newest last, at most 100
+        self.deny = None  # optional callable(host) -> True for hosts the operator never wants contacted
         self._server = None
         self._tasks = set()
 
@@ -75,6 +84,8 @@ class PrivateNetworkProxy:
     async def vet(self, host, port):
         """The address to connect to. Raises _Refused for non-public hosts, OSError when unresolvable."""
         host = host.rstrip(".").lower()
+        if self.deny is not None and host and self.deny(host):
+            raise _Denied(host)
         if not host or host == "localhost" or host.endswith(".localhost"):
             raise _Refused(host)
         try:
@@ -126,6 +137,9 @@ class PrivateNetworkProxy:
     async def _connect_vetted(self, writer, host, port):
         try:
             return await self.vet(host, port)
+        except _Denied:
+            self._note(f"{host}:{port}")
+            await self._reply(writer, 403, "Forbidden", "blocked: denied host")
         except _Refused:
             self._note(f"{host}:{port}")
             await self._reply(writer, 403, "Forbidden", "blocked: private network")

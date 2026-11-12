@@ -102,6 +102,7 @@ class PrivateNetworkGuard:
         self._ttl = ttl
         self._cache = {}
         self.blocked = []  # refused urls, newest last, at most 100
+        self.deny = None  # optional callable(host) -> True for hosts never to contact
 
     async def allowed(self, url):
         parts = urlsplit(url)
@@ -112,6 +113,8 @@ class PrivateNetworkGuard:
             return False
         host = (parts.hostname or "").rstrip(".").lower()
         if not host or host == "localhost" or host.endswith(".localhost"):
+            return False
+        if self.deny is not None and self.deny(host):
             return False
         try:
             return is_public_ip(ipaddress.ip_address(host))

@@ -287,6 +287,7 @@ class Session:
         self._net_guard = None
         self._net_guard_on = None  # the context the guard's routes are installed on
         self._net_proxy = None  # the local proxy that enforces the block where connections are made
+        self._deny = None  # callable(host) -> True for hosts never to contact (deny_hosts)
         self.profile_dir = profile_dir
         self.proxy = proxy
         # with a proxy: nothing of chromium's own on it, loopback through it, never start without it
@@ -2711,6 +2712,7 @@ class Session:
             return self._net_proxy
         await self._stop_net_proxy()
         self._net_proxy = await PrivateNetworkProxy().start(port)
+        self._net_proxy.deny = self._deny
         return self._net_proxy
 
     async def _stop_net_proxy(self):
@@ -2734,6 +2736,7 @@ class Session:
             return {"block_private": True, "active": False}
         if self._net_guard is None:
             self._net_guard = PrivateNetworkGuard(resolver)
+            self._net_guard.deny = self._deny
         if self._net_guard_on is not self._context:  # first time, or the browser was relaunched
             patchright = self.driver == "patchright"
             if patchright and not self._net_proxy:
@@ -2748,6 +2751,23 @@ class Session:
         blocked = self._net_guard.blocked + (self._net_proxy.blocked if self._net_proxy else [])
         return {"block_private": True, "active": True, "proxy": self._net_proxy is not None,
                 "blocked": blocked[-10:]}
+
+    def deny_hosts(self, check):
+        """Never contact hosts for which ``check(host)`` is true, from any tab, worker or socket.
+
+        For callers with hosts that are off limits, such as a research tool next to a bug-bounty
+        program. Checked by the request guard and, for sessions with the private-network block, by
+        the proxy where connections are made, so service-worker requests and WebSockets are
+        covered as well. Runtime only: the check is code, so it is not saved with the profile.
+        Pass None to clear it.
+        """
+        self._deny = check
+        if self._net_guard is not None:
+            self._net_guard.deny = check
+        if self._net_proxy is not None:
+            self._net_proxy.deny = check
+        return {"deny": check is not None, "guard": self._net_guard is not None,
+                "proxy": self._net_proxy is not None}
 
     async def set_extra_headers(self, headers):
         if not self._context:

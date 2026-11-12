@@ -303,6 +303,7 @@ async with HutchClient() as client:
 | **Page state** | URL + title + ref snapshot returned after every action |
 | **Smart waits** | Click waits for networkidle; configurable strategies |
 | **Request interception** | Modify headers, block URLs, swap auth tokens |
+| **Deny hosts** | `session.deny_hosts(check)`: hosts never to contact, refused by the request guard and, with the private-network block, by the proxy every connection goes through (service workers and WebSockets included) |
 | **Private network block** | Opt-in `block_private`: refuse loopback, LAN, link-local and metadata addresses, for sessions that open untrusted URLs. Checked per request, then again by a local proxy that connects only to the address it checked (no DNS rebinding, service workers covered) |
 | **Stealth driver** | Opt-in `driver: patchright` per session: no `Runtime.enable` or `Console.enable` traces, scripts evaluated out of the page's sight |
 | **Cookie/storage API** | Get/set/delete cookies and localStorage |

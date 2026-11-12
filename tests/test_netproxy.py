@@ -206,3 +206,32 @@ async def test_patchright_session_blocks_fetch_and_websockets(pool):
         }}""")
         assert result == {"fetch": "blocked", "ws": "blocked"}
         assert server.hits == 0
+
+
+@pytest.mark.asyncio
+async def test_denied_hosts_are_refused_before_any_lookup():
+    dns = _resolver({"public.test": [["127.0.0.2"]]})
+    p = await PrivateNetworkProxy(resolver=dns, allow_ip=lambda ip: ip == "127.0.0.2").start()
+    p.deny = lambda host: host == "target.test" or host.endswith(".target.test")
+    try:
+        reply = await _through(p, "CONNECT api.target.test:443 HTTP/1.1\r\n\r\n")
+        assert reply.startswith("HTTP/1.1 403") and "denied host" in reply
+        assert dns.calls == []  # not even resolved
+    finally:
+        await p.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _driver.available("patchright"), reason="patchright not installed")
+async def test_deny_reaches_the_guard_and_the_proxy_of_a_live_session(pool):
+    # the proxy sees every connection the browser makes (service workers and websockets included),
+    # so a deny check installed there covers what page routes cannot
+    async with _Server() as server:
+        s = await pool.create("np-deny", headless=True, block_private=True, driver="patchright")
+        state = s.deny_hosts(lambda host: host == "denied.test")
+        assert state == {"deny": True, "guard": True, "proxy": True}
+        assert s._net_proxy.deny is not None and s._net_guard.deny is not None
+        reply = await _through(s._net_proxy, "CONNECT denied.test:443 HTTP/1.1\r\n\r\n")
+        assert "denied host" in reply
+        assert await s._net_guard.allowed("wss://denied.test/socket") is False
+        assert server.hits == 0
