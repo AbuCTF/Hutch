@@ -111,3 +111,11 @@ def test_wsl_on_utc_reports_the_windows_zone(tmp_path, monkeypatch):
     monkeypatch.delenv("TZ")
     monkeypatch.setattr(tz._browser, "is_wsl", lambda: False)  # elsewhere the system zone is inherited
     assert tz.host_timezone() is None
+
+
+def test_status_shows_the_profile_settings(tmp_path):
+    s = Session("st", str(tmp_path / "st"), driver="patchright", block_private=True, humanize=True)
+    status = s.status()
+    assert (status["driver"], status["block_private"], status["humanize"]) == ("patchright", True, True)
+    plain = Session("plain", str(tmp_path / "plain")).status()
+    assert (plain["driver"], plain["block_private"], plain["humanize"]) == ("playwright", False, False)
