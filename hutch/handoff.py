@@ -137,6 +137,34 @@ def read_request(profile_dir):
         return None
 
 
+def live_request(profile_dir):
+    """The request a waiting process left in the profile, if that process is still running.
+
+    A waiter that was killed cannot clean up after itself; its file is removed here instead of
+    reporting a person being waited on forever.
+    """
+    info = read_request(profile_dir)
+    if not info:
+        return None
+    pid = info.get("pid")
+    if isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
+        clear_request(profile_dir)
+        return None
+    return info
+
+
+def _pid_alive(pid):
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True  # exists but not ours, or a platform without signal 0: assume alive
+    return True
+
+
 def clear_request(profile_dir):
     for name in (REQUEST_FILE, RESUME_FILE):
         try:

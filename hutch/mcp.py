@@ -92,10 +92,13 @@ def create_mcp_server():
         return {"url": page.url, "title": title}
 
     def _session_info(s):
+        state, reason, waiting = s.handoff_state()
         return {
             "name": s.name,
             "alive": s.is_alive,
-            "state": s.state.value,
+            "state": state,
+            "pause_reason": reason,
+            "waiting": waiting,
             "pages": s.page_count,
             "headless": s.headless,
             "proxy": s.proxy.server if s.proxy else None,
@@ -1263,9 +1266,10 @@ def create_mcp_server():
             session = await _get_session(arguments["session"])
             action = arguments.get("action", "await")
             if action == "status":
+                state, reason, waiting = session.handoff_state()
                 return [TextContent(type="text", text=_json({
-                    "state": session.state.value, "pause_reason": session.pause_reason,
-                    "waiting": session.handoff_request, **await _page_state(session)}))]
+                    "state": state, "pause_reason": reason,
+                    "waiting": waiting, **await _page_state(session)}))]
             if action == "resume":
                 session.resume()
                 return [TextContent(type="text", text=_json({

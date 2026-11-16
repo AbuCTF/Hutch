@@ -610,13 +610,14 @@ class HutchDaemon:
     async def _rpc_handoff(self, params):
         name = params["name"]
         s = await self.pool.get(name)
+        state, reason, waiting = s.handoff_state()
         return {
             "name": name,
-            "state": s.state.value,
-            "pause_reason": s.pause_reason,
+            "state": state,
+            "pause_reason": reason,
             "alive": s.is_alive,
             "url": s._active_page().url if s._active_page() else None,
-            "waiting": s.handoff_request,
+            "waiting": waiting,
         }
 
     async def _rpc_await_human(self, params):
@@ -953,11 +954,13 @@ class HutchDaemon:
 
 
 def _session_info(s):
+    state, reason, waiting = s.handoff_state()
     return {
         "name": s.name,
         "alive": s.is_alive,
-        "state": s.state.value,
-        "pause_reason": s.pause_reason,
+        "state": state,
+        "pause_reason": reason,
+        "waiting": waiting,
         "pages": s.page_count,
         "headless": s.headless,
         "proxy": s.proxy.server if s.proxy else None,

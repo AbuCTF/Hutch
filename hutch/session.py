@@ -2674,6 +2674,21 @@ class Session:
         self._pause_callbacks.append(callback)
         return lambda: self._pause_callbacks.remove(callback)
 
+    def handoff_state(self):
+        """(state, pause_reason, waiting) as anyone looking at this profile should see them.
+
+        The process running await_human holds the pause; another process (the CLI, the daemon,
+        an MCP server) sees it through the request that waiter keeps in the profile.
+        """
+        waiting = self.handoff_request
+        if waiting is None and self.profile_dir:
+            from hutch import handoff as _handoff
+            waiting = _handoff.live_request(self.profile_dir)
+        state, reason = self.state.value, self.pause_reason
+        if waiting and state != SessionState.PAUSED.value:
+            state, reason = SessionState.PAUSED.value, waiting.get("reason")
+        return state, reason, waiting
+
     async def await_human(self, reason="challenge", *, until=None, timeout=600, poll=2.0,
                           screenshot=True, artifacts=None):
         """Hand the browser to a person and wait until they are done.
@@ -2724,6 +2739,7 @@ class Session:
             "headless": self.headless,
             "how": (f"hutch view {self.name}" if self.headless else "the browser window")
                    + f", then hutch resume {self.name} (or let it notice)",
+            "pid": os.getpid(),
         }
         if self.profile_dir:
             _handoff.clear_request(self.profile_dir)
@@ -3057,6 +3073,7 @@ class Session:
         return 0
 
     def status(self):
+        state, reason, waiting = self.handoff_state()
         return {
             "name": self.name,
             "alive": self.is_alive,
@@ -3067,8 +3084,9 @@ class Session:
             "fingerprint": f"{self.fingerprint.viewport_width}x{self.fingerprint.viewport_height}",
             "profile_dir": self.profile_dir,
             "tags": self.tags,
-            "state": self.state.value,
-            "pause_reason": self.pause_reason,
+            "state": state,
+            "pause_reason": reason,
+            "waiting": waiting,
             "launcher": self.launcher,
             "browser": self.browser,
             "persona": self.persona,

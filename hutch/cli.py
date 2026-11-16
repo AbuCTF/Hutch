@@ -202,7 +202,7 @@ async def cmd_ps(_pool, args):
         print(fmt.format(_truncate(r[0], 20), *r[1:]))
     from . import handoff
     for name, s in _profiles(args).items():
-        waiting = handoff.read_request(s.profile_dir)
+        waiting = handoff.live_request(s.profile_dir)
         if waiting:
             print(f"\n{name} is waiting for a person ({waiting.get('reason')}): {waiting.get('how')}")
 
@@ -246,7 +246,7 @@ async def cmd_clone(_pool, args):
 async def cmd_resume(_pool, args):
     from . import handoff
     s = _load(args, args.name)
-    waiting = handoff.read_request(s.profile_dir)
+    waiting = handoff.live_request(s.profile_dir)
     if not waiting:
         print(f"{s.name}: not waiting for a person")
         return
@@ -370,6 +370,8 @@ async def cmd_status(_pool, args):
     if st:
         info.update(alive=True, pid=st["pid"], port=st["port"], headless=st.get("headless"),
                     memory_mb=browser.memory_mb(st["pid"]))
+        if info["state"] == "hibernated":
+            info["state"] = "active"  # running, just not connected to this process
     info.pop("owned", None)
     print(json.dumps(info, indent=2))
 

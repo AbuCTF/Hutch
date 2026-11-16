@@ -292,3 +292,33 @@ async def test_mcp_handoff(tmp_path):
             await client.call_tool("hutch_sessions", {"action": "close", "name": "aw-mcp"})
     finally:
         shutil.rmtree(os.path.expanduser("~/.hutch/artifacts/aw-mcp"), ignore_errors=True)
+
+
+@pytest.mark.asyncio
+class TestSeenFromElsewhere:
+    """The CLI, the daemon and MCP see a handoff another process is waiting on."""
+
+    async def test_status_reports_another_process_waiting(self, pool):
+        s = await pool.create("aw-elsewhere", headless=True)
+        handoff.write_request(s.profile_dir, {"reason": "turnstile", "pid": os.getpid(),
+                                              "how": "the browser window"})
+        try:
+            other = type(s).from_profile_dir(s.profile_dir)  # what `hutch status` loads
+            info = other.status()
+            assert info["state"] == "paused"
+            assert info["pause_reason"] == "turnstile"
+            assert info["waiting"]["reason"] == "turnstile"
+        finally:
+            handoff.clear_request(s.profile_dir)
+        assert s.status()["waiting"] is None
+
+    async def test_dead_waiter_is_not_reported(self, pool):
+        import subprocess
+        import sys
+        s = await pool.create("aw-dead", headless=True)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        handoff.write_request(s.profile_dir, {"reason": "captcha", "pid": gone.pid})
+        info = type(s).from_profile_dir(s.profile_dir).status()
+        assert info["state"] != "paused" and info["waiting"] is None
+        assert handoff.read_request(s.profile_dir) is None  # cleaned up
