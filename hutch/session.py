@@ -316,6 +316,7 @@ class Session:
         self.state = SessionState.ACTIVE
         self.pause_reason = None
         self.auto_pause = True
+        self.handoff_request = None  # what await_human is waiting on, while it waits
 
         self._context = None
         self._browser = None
@@ -2672,6 +2673,114 @@ class Session:
     def on_pause(self, callback):
         self._pause_callbacks.append(callback)
         return lambda: self._pause_callbacks.remove(callback)
+
+    async def await_human(self, reason="challenge", *, until=None, timeout=600, poll=2.0,
+                          screenshot=True, artifacts=None):
+        """Hand the browser to a person and wait until they are done.
+
+        The session pauses, so agent actions raise until it carries on. Hutch saves a screenshot,
+        notes the request in the profile (``hutch ps`` shows it), and emits a ``handoff`` event.
+        on_pause callbacks fire, so a harness can send its alert from there.
+
+        It returns when one of these happens:
+        - someone calls ``resume()`` here, over the daemon, or with ``hutch resume NAME`` from
+          any shell;
+        - ``until`` holds;
+        - ``timeout`` seconds pass.
+
+        Either way the session is active again on return, and ``outcome`` says which of
+        resumed, cleared, timeout or closed it was. ``until`` is a callable(session) returning a
+        bool (or an awaitable of one), or "challenge" (no challenge page and no unanswered
+        widget left on the tab), or {"gone": selector}, {"visible": selector} or
+        {"url": substring}.
+
+        Nothing here answers a challenge. A person does that in the window, or in
+        ``hutch view NAME`` when the browser is headless.
+        """
+        from hutch import handoff as _handoff
+        check, needed = _handoff.condition(until)
+        if not self.is_alive:
+            raise RuntimeError(f"session '{self.name}' not launched")
+        page = self._active_page()
+        shot = None
+        if screenshot:
+            try:
+                png = await self.screenshot()
+                if png:
+                    if artifacts is None:
+                        from hutch.artifacts import ArtifactStore
+                        artifacts = ArtifactStore()
+                    shot = artifacts.save_screenshot(self.name, png, label="handoff").path
+            except Exception as exc:
+                _log.warning("session '%s': handoff screenshot failed: %s", self.name, exc)
+        started = time.time()
+        self.handoff_request = {
+            "session": self.name,
+            "reason": reason,
+            "url": page.url if page else None,
+            "screenshot": shot,
+            "started": round(started, 3),
+            "timeout": timeout,
+            "headless": self.headless,
+            "how": (f"hutch view {self.name}" if self.headless else "the browser window")
+                   + f", then hutch resume {self.name} (or let it notice)",
+        }
+        if self.profile_dir:
+            _handoff.clear_request(self.profile_dir)
+            _handoff.write_request(self.profile_dir, self.handoff_request)
+        self.events.emit("handoff", **{k: v for k, v in self.handoff_request.items()
+                                       if k != "session"})
+        if self.state == SessionState.PAUSED:
+            self.pause_reason = reason  # already paused by a health alert: callbacks have fired
+        else:
+            self.pause(reason)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        outcome, streak = "timeout", 0
+        try:
+            while True:
+                if self._resume_event.is_set():
+                    outcome = "resumed"
+                    break
+                if self.profile_dir and _handoff.resume_requested(self.profile_dir, started):
+                    outcome = "resumed"
+                    break
+                if not self.is_alive:
+                    outcome = "closed"
+                    break
+                if check is not None:
+                    try:
+                        held = await check(self)
+                    except Exception:
+                        held = False
+                    streak = streak + 1 if held else 0
+                    if streak >= needed:
+                        outcome = "cleared"
+                        break
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._resume_event.wait(), min(poll, remaining))
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            if self.profile_dir:
+                _handoff.clear_request(self.profile_dir)
+            self.handoff_request = None
+            if self.is_alive:
+                self.resume()
+            elif self.state == SessionState.PAUSED:
+                self.state = SessionState.HIBERNATED
+                self.pause_reason = None
+                self._resume_event.set()
+        waited = round(time.time() - started, 2)
+        page = self._active_page()
+        url = page.url if page else None
+        self.events.emit("handoff_end", outcome=outcome, reason=reason, waited_s=waited, url=url)
+        return {"outcome": outcome, "reason": reason, "waited_s": waited, "screenshot": shot,
+                "url": url}
 
     def _require_active(self):
         if self.state == SessionState.PAUSED:

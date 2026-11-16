@@ -54,6 +54,8 @@ hutch headless bb-acme                 # off screen, tabs + session restored (~1
 hutch headed bb-acme                   # back on screen
 hutch ps                               # running browsers and their memory
 hutch stop bb-acme                     # or just close the window
+hutch profile export bb-acme acme.tar.gz   # the profile and its logins, to carry elsewhere
+hutch profile import acme.tar.gz           # back as a session (give a name to rename it)
 hutch doctor                           # libraries, fonts, display, attachable browsers
 hutch gc --dry-run --caches            # what old artifacts, downloads and caches would free
 ```
@@ -156,6 +158,35 @@ per-session event log; new events are appended to every tool result, and `hutch_
 them, answers the next dialog or sets files on an open chooser. Agent tabs accept alerts and
 dismiss confirm/prompt unless told otherwise; dialogs on the human's tabs are left to the human.
 Downloads from a headless browser go to `<profile>/downloads`, a visible one keeps the usual folder.
+
+#### Hand it to a person
+
+For a CAPTCHA or bot check, an emailed code, a payment: anything a person should do. Hutch never
+answers a challenge itself; it waits for the person and notices when they are done.
+
+```python
+result = await s.await_human("captcha on signup", until="challenge", timeout=600)
+# {"outcome": "cleared", "waited_s": 41.2, "screenshot": "~/.hutch/artifacts/...-handoff.png", ...}
+```
+
+```bash
+hutch view bb-acme       # headless? see and drive it from a web page
+hutch ps                 # lists sessions waiting for a person and why
+hutch resume bb-acme     # done: from any shell, the waiting session carries on
+```
+
+- the session pauses (agent actions raise until it carries on), saves a screenshot and emits a
+  `handoff` event; `on_pause` callbacks fire, which is where a harness sends its alert
+- it returns on `hutch resume`, `resume()` (daemon or python), the `until` condition, or the
+  timeout, and the session is active again in every case; `outcome` says which:
+  `resumed`, `cleared`, `timeout` or `closed`
+- `until`: `"challenge"` (no challenge page and no unanswered Turnstile, reCAPTCHA or hCaptcha
+  widget left on the tab), `{"gone": selector}`, `{"visible": selector}`, `{"url": substring}`,
+  or any callable in python
+- the clearance a person earns stays in the profile, so one pass usually covers that site
+  for a while; `profile export` carries it to another machine with the logins
+- agents: `hutch_handoff` (await, status, resume); over the daemon the call holds its
+  connection, so resume from another client or with `hutch resume`
 
 #### Google sign-in
 
@@ -270,13 +301,8 @@ async with HutchClient() as client:
     await s.modify_headers({"X-Forwarded-For": "127.0.0.1"}, pattern="**/api/*")
     await s.block_urls(["**/analytics*", "**/tracking*"])
 
-    # human-in-the-loop handoff
-    info = await s.handoff()
-    if info["state"] == "paused":
-        await s.headed()      # same profile on screen, tabs restored
-        # solve the captcha...
-        await s.headless()
-        await s.resume()
+    # a person takes over: blocks until they are done, see "Hand it to a person"
+    result = await s.await_human("captcha on signup", until="challenge")
 
     # snapshot refs work as selectors everywhere
     print(await s.aria_snapshot())   # - button "Log in" [ref=e6]
@@ -308,7 +334,7 @@ async with HutchClient() as client:
 | **Stealth driver** | Opt-in `driver: patchright` per session: no `Runtime.enable` or `Console.enable` traces, scripts evaluated out of the page's sight |
 | **Cookie/storage API** | Get/set/delete cookies and localStorage |
 | **Health monitoring** | Auto-detect captcha, auth expiry, rate limiting |
-| **HITL handoff** | Auto-pause on challenges, human solves, agent resumes |
+| **HITL handoff** | Auto-pause on challenges; `await_human` pauses, screenshots, alerts and waits until a person is done (`hutch resume`, a condition, or a timeout) |
 | **Parallel execution** | Same action across multiple sessions simultaneously |
 | **Compare** | Diff responses across sessions for authz testing |
 | **Daemon mode** | Unix socket JSON-RPC server for agent integration |

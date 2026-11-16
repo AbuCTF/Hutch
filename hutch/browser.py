@@ -688,6 +688,80 @@ def clone_profile(src, dst):
                 os.unlink(os.path.join(dst, name))
 
 
+_EXPORT_ROOT = "hutch-profile"
+_EXPORT_SKIP = _CLONE_SKIP | {"hutch_handoff.json", "hutch_resume"}
+
+
+def export_profile(src, path):
+    """A profile (logins, storage, settings) as a .tar.gz, without caches or lock files.
+
+    The archive holds live sign-ins, so it is written readable by its owner only. Cookies move
+    between machines because hutch's browsers keep them under ``--password-store=basic``.
+    """
+    import tarfile
+    if status(src):
+        raise BrowserError("profile is open, close it first")
+    if os.path.exists(path):
+        raise BrowserError(f"file exists: {path}")
+
+    def keep(info):
+        parts = info.name.split("/")[1:]
+        if any(p in _EXPORT_SKIP or p.startswith("Singleton") for p in parts):
+            return None
+        if not (info.isfile() or info.isdir()):
+            return None  # symlinks, sockets, pipes
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        return info
+
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f, tarfile.open(fileobj=f, mode="w:gz") as tar:
+            tar.add(src, arcname=_EXPORT_ROOT, filter=keep)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+    return path
+
+
+def import_profile(path, dst):
+    """Unpack an archive from export_profile into a new profile directory.
+
+    Only plain files and directories under the archive's root are accepted: no absolute paths,
+    no "..", no links or devices, so an archive cannot write outside ``dst``.
+    """
+    import tarfile
+    import tempfile
+    if os.path.exists(dst):
+        raise BrowserError(f"destination exists: {dst}")
+    parent = os.path.dirname(os.path.abspath(dst))
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=".import-", dir=parent)
+    try:
+        try:
+            tar = tarfile.open(path, "r:gz")
+        except (tarfile.TarError, OSError) as e:
+            raise BrowserError(f"not a hutch profile archive: {e}") from e
+        with tar:
+            members = tar.getmembers()
+            for m in members:
+                parts = m.name.split("/")
+                if (parts[0] != _EXPORT_ROOT or ".." in parts or m.name.startswith("/")
+                        or "\\" in m.name or not (m.isfile() or m.isdir())):
+                    raise BrowserError(f"not a hutch profile archive: unexpected entry {m.name!r}")
+            extra = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+            tar.extractall(tmp, members=members, **extra)
+        root = os.path.join(tmp, _EXPORT_ROOT)
+        if not os.path.isfile(os.path.join(root, "hutch_meta.json")):
+            raise BrowserError("not a hutch profile archive: no hutch_meta.json")
+        os.chmod(root, 0o700)
+        os.replace(root, dst)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return dst
+
+
 def attach_hint():
     if is_wsl():
         return ("WSL needs mirrored networking: set networkingMode=mirrored under [wsl2] in "

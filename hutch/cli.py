@@ -200,6 +200,11 @@ async def cmd_ps(_pool, args):
     print(fmt.format("NAME", "PID", "MODE", "BROWSER", "PORT", "MEMORY"))
     for r in rows:
         print(fmt.format(_truncate(r[0], 20), *r[1:]))
+    from . import handoff
+    for name, s in _profiles(args).items():
+        waiting = handoff.read_request(s.profile_dir)
+        if waiting:
+            print(f"\n{name} is waiting for a person ({waiting.get('reason')}): {waiting.get('how')}")
 
 
 async def _switch_mode(args, headless):
@@ -236,6 +241,55 @@ async def cmd_clone(_pool, args):
     s.name = args.dst
     s._save_meta()
     print(f"cloned: {args.src} -> {args.dst}")
+
+
+async def cmd_resume(_pool, args):
+    from . import handoff
+    s = _load(args, args.name)
+    waiting = handoff.read_request(s.profile_dir)
+    if not waiting:
+        print(f"{s.name}: not waiting for a person")
+        return
+    handoff.request_resume(s.profile_dir)
+    print(f"{s.name}: resuming ({waiting.get('reason')})")
+
+
+async def cmd_profile(_pool, args):
+    if args.action == "export":
+        s = _load(args, args.name)
+        path = os.path.abspath(args.file)
+        try:
+            browser.export_profile(s.profile_dir, path)
+        except browser.BrowserError as e:
+            raise SystemExit(f"hutch: {e}")
+        print(f"exported: {s.name} -> {path}")
+        print("it holds that profile's sign-ins: keep it private")
+        return
+    path = os.path.abspath(args.file)
+    if not os.path.isfile(path):
+        raise SystemExit(f"hutch: no such file: {args.file}")
+    import tempfile
+    base = _base_dir(args)
+    os.makedirs(base, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".import-", dir=base)
+    try:
+        unpacked = os.path.join(staging, "profile")
+        try:
+            browser.import_profile(path, unpacked)
+        except browser.BrowserError as e:
+            raise SystemExit(f"hutch: {e}")
+        s = Session.from_profile_dir(unpacked)
+        name = _validate_name(args.name or s.name)
+        dst = os.path.join(base, name)
+        if os.path.exists(dst):
+            raise SystemExit(f"hutch: {name} exists, give another name: hutch profile import FILE NAME")
+        os.replace(unpacked, dst)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    s = Session.from_profile_dir(dst)
+    s.name = name
+    s._save_meta()
+    print(f"imported: {path} -> {name}")
 
 
 async def cmd_tabs(_pool, args):
@@ -771,6 +825,8 @@ def main():
             "  ps                    running browsers and memory\n"
             "  stop <name>|--all     close a browser, keep the profile\n"
             "  clone <src> <dst>     copy a profile with its logins\n"
+            "  profile export|import carry a profile to another machine as a .tar.gz\n"
+            "  resume <name>         a person is done: let a waiting session carry on\n"
             "  attach <target>       connect to your chrome, brave or edge\n"
             "\n"
             "sessions:\n"
@@ -937,6 +993,22 @@ def main():
     c.add_argument("src", help="existing session")
     c.add_argument("dst", help="new session name")
     c.set_defaults(func=cmd_clone)
+
+    c = _sub("resume")
+    c.add_argument("name", help="session waiting for a person (see hutch ps)")
+    c.set_defaults(func=cmd_resume)
+
+    c = _sub("profile")
+    psub = c.add_subparsers(dest="action", required=True)
+    pe = psub.add_parser("export", prog="hutch profile export",
+                         help="write a profile with its logins to a .tar.gz")
+    pe.add_argument("name", help="session name")
+    pe.add_argument("file", help="archive to write, e.g. acct1.tar.gz")
+    pi = psub.add_parser("import", prog="hutch profile import",
+                         help="unpack an exported profile as a new session")
+    pi.add_argument("file", help="archive from hutch profile export")
+    pi.add_argument("name", nargs="?", help="session name, default the exported one")
+    c.set_defaults(func=cmd_profile)
 
     c = _sub("attach")
     c.add_argument("target", help="chrome | brave | edge | port | http://host:port | ws://...")

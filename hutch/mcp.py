@@ -6,7 +6,7 @@ the CLI and a human's window can all work on the same profile at once.
 Tools: hutch_sessions, hutch_navigate, hutch_observe, hutch_interact,
 hutch_screenshot, hutch_page_state, hutch_network, hutch_cookies,
 hutch_intercept, hutch_evaluate, hutch_content, hutch_diff, hutch_pages,
-hutch_health, hutch_auth.
+hutch_health, hutch_auth, hutch_authz, hutch_call, hutch_events, hutch_handoff.
 
 Manages its own Pool inline (like the daemon does).
 """
@@ -60,6 +60,10 @@ def create_mcp_server():
                     + (" (multiple)" if e.get("multiple") else ""))
         if t == "popup":
             return f"#{e['seq']} popup{where} from tab {e.get('opener')}: {e.get('url')}"
+        if t == "handoff":
+            return f"#{e['seq']} waiting for a person ({e.get('reason')}): {e.get('how')}"
+        if t == "handoff_end":
+            return f"#{e['seq']} handoff over: {e.get('outcome')} after {e.get('waited_s')}s"
         return f"#{e['seq']} {t}{where} {e.get('url', '')}".rstrip()
 
     def _new_events(name):
@@ -628,13 +632,47 @@ def create_mcp_server():
                         "since": {"type": "integer", "default": 0, "description": "Only events with a higher seq"},
                         "types": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["dialog", "download", "filechooser", "popup", "crash"]},
+                            "items": {"type": "string", "enum": [
+                                "dialog", "download", "filechooser", "popup", "crash",
+                                "handoff", "handoff_end"]},
                         },
                         "timeout": {"type": "number", "default": 30, "description": "Seconds to wait"},
                         "accept": {"type": "boolean", "default": True},
                         "text": {"type": "string", "description": "Prompt answer"},
                         "policy": {"type": "string", "enum": ["accept", "dismiss", "auto"]},
                         "files": {"type": "array", "items": {"type": "string"}, "description": "Absolute file paths"},
+                    },
+                    "required": ["session"],
+                },
+            ),
+            Tool(
+                name="hutch_handoff",
+                description=(
+                    "Hand the browser to a person and wait, for a CAPTCHA or bot check, an email "
+                    "or SMS code, a payment, or anything else a person should do. Hutch never "
+                    "answers a challenge itself. action=await (default) pauses the session, saves "
+                    "a screenshot and blocks until the person is done or 'timeout' passes. The "
+                    "person is done when they run `hutch resume NAME`, or when 'until' notices: "
+                    "until=\"challenge\" (no challenge page or unanswered widget left on the tab), "
+                    "until_gone / until_visible (a selector), until_url (a substring). Tell the "
+                    "person what to do before calling; a headless session is shown with "
+                    "`hutch view NAME`. action=status shows whether a session is waiting; "
+                    "action=resume carries on."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session": {"type": "string", "description": "Session name"},
+                        "action": {"type": "string", "enum": ["await", "status", "resume"],
+                                   "default": "await"},
+                        "reason": {"type": "string", "default": "challenge",
+                                   "description": "What the person should do, shown to them"},
+                        "until": {"type": "string", "enum": ["challenge"]},
+                        "until_gone": {"type": "string", "description": "Done once this selector is gone"},
+                        "until_visible": {"type": "string", "description": "Done once this selector shows"},
+                        "until_url": {"type": "string", "description": "Done once the URL contains this"},
+                        "timeout": {"type": "number", "default": 300, "maximum": 900,
+                                    "description": "Seconds to wait"},
                     },
                     "required": ["session"],
                 },
@@ -1220,6 +1258,36 @@ def create_mcp_server():
             if action == "files":
                 return [TextContent(type="text", text=_json(await session.set_files(arguments["files"])))]
             return [TextContent(type="text", text=f"error: unknown action '{action}'")]
+
+        if name == "hutch_handoff":
+            session = await _get_session(arguments["session"])
+            action = arguments.get("action", "await")
+            if action == "status":
+                return [TextContent(type="text", text=_json({
+                    "state": session.state.value, "pause_reason": session.pause_reason,
+                    "waiting": session.handoff_request, **await _page_state(session)}))]
+            if action == "resume":
+                session.resume()
+                return [TextContent(type="text", text=_json({
+                    "resumed": True, **await _page_state(session)}))]
+            if action != "await":
+                return [TextContent(type="text", text=f"error: unknown action '{action}'")]
+            until = arguments.get("until")
+            for key in ("gone", "visible", "url"):
+                if arguments.get(f"until_{key}"):
+                    until = {key: arguments[f"until_{key}"]}
+            timeout = min(max(float(arguments.get("timeout", 300)), 0.0), 900.0)
+            result = await session.await_human(
+                arguments.get("reason") or "challenge", until=until, timeout=timeout)
+            content = [TextContent(type="text", text=_json(result))]
+            try:
+                png = await session.screenshot()
+                if png:
+                    content.append(ImageContent(type="image", data=base64.b64encode(png).decode(),
+                                                mimeType="image/png"))
+            except Exception:
+                pass
+            return content
 
         if name == "hutch_auth":
             session = await _get_session(arguments["session"])

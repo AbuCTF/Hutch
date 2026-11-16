@@ -104,8 +104,9 @@ class HutchDaemon:
             await asyncio.sleep(min(60, max(1, self.idle_timeout / 4)))
             now = time.time()
             for s in self.pool.list():
-                # visible windows and browsers we only attached to belong to the human
-                if not s.is_alive or not s.headless or not s._owned:
+                # visible windows and browsers we only attached to belong to the human, and so
+                # does a paused session: someone may be working in it through `hutch view`
+                if not s.is_alive or not s.headless or not s._owned or s.state.value == "paused":
                     continue
                 if (now - s._last_activity) > self.idle_timeout:
                     await s.close()
@@ -222,6 +223,7 @@ class HutchDaemon:
             "pause": self._rpc_pause,
             "resume": self._rpc_resume,
             "handoff": self._rpc_handoff,
+            "await_human": self._rpc_await_human,
             "status": self._rpc_status,
             "ping": self._rpc_ping,
             "attach": self._rpc_attach,
@@ -614,7 +616,19 @@ class HutchDaemon:
             "pause_reason": s.pause_reason,
             "alive": s.is_alive,
             "url": s._active_page().url if s._active_page() else None,
+            "waiting": s.handoff_request,
         }
+
+    async def _rpc_await_human(self, params):
+        """Blocks this connection until a person is done: resume from another connection or
+        with ``hutch resume NAME``."""
+        s = await self.pool.get(params["name"])
+        return await s.await_human(
+            params.get("reason", "challenge"),
+            until=params.get("until"),
+            timeout=min(float(params.get("timeout", 600)), 3600),
+            poll=max(float(params.get("poll", 2)), 0.25),
+            artifacts=self.artifacts)
 
     async def _rpc_status(self, params):
         pool_status = self.pool.status()

@@ -179,6 +179,14 @@ class SessionHandle:
     async def handoff(self):
         return await self._client._call("handoff", {"name": self.name})
 
+    async def await_human(self, reason="challenge", *, until=None, timeout=600, poll=2):
+        """Pause for a person and wait (see Session.await_human). This holds the connection:
+        resume from another client or with ``hutch resume NAME``. ``until`` is "challenge" or a
+        dict such as {"gone": selector}; callables only work in-process."""
+        return await self._client._call("await_human", {
+            "name": self.name, "reason": reason, "until": until,
+            "timeout": timeout, "poll": poll})
+
     async def close(self):
         return await self._client._call("close", {"name": self.name})
 
