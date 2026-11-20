@@ -224,3 +224,22 @@ async def test_dialogs_and_popups_reach_the_session(pool, site):
     assert len(await s.pages()) == 2
     assert [e for e in s.events.since(0, {"popup"})]
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headless", [True, False])
+async def test_the_default_launch_is_clean(pool, site, headless):
+    """No port 0, no AutomationControlled, no test-type: webdriver stays false and no infobar eats the viewport."""
+    from hutch import display
+
+    if not headless and not display.available():
+        pytest.skip("needs Xvfb")
+    s = await pool.create(f"clean-{headless}", headless=headless, display="virtual", driver="cdp")
+    await s.goto(site + "/")
+    cmdline = open(f"/proc/{s._pid}/cmdline", "rb").read().decode().split("\0")
+    assert not any("AutomationControlled" in a or a in ("--test-type", "--enable-automation") for a in cmdline)
+    port = [a for a in cmdline if a.startswith("--remote-debugging-port=")]
+    assert port and port[0] != "--remote-debugging-port=0"
+    seen = await s.evaluate("[navigator.webdriver, innerHeight, outerHeight - innerHeight]")
+    assert seen[0] is False
+    assert seen[2] < 120, "an infobar would add 56px to the browser chrome"
+    assert s.cdp_endpoint() and (await s.pages())

@@ -514,11 +514,12 @@ class Session:
         ]
         if (self.proxy and self.strict_proxy) or self._net_proxy:
             chrome_args += list(_browser._STRICT_ARGS)
-        if self.headless:
-            chrome_args.append("--disable-blink-features=AutomationControlled")
-        else:
-            chrome_args += [f"--class={self._window_class()}",
-                            "--disable-blink-features=AutomationControlled", "--test-type"]
+        # the way playwright launches chrome (a debugging pipe) leaves AutomationControlled on whatever
+        # the port is, so this launcher alone still needs the feature off (and, headed, --test-type to
+        # keep the bar that flag paints out of the viewport). The native launcher needs neither.
+        chrome_args.append("--disable-blink-features=AutomationControlled")
+        if not self.headless:
+            chrome_args += [f"--class={self._window_class()}", "--test-type"]
             # Hyprland owns tiled window geometry. Asking Chromium to maximize
             # is commonly suppressed by compositor policy and can leave its
             # render surface at the default size until DevTools forces a reset.
@@ -550,6 +551,7 @@ class Session:
             "accept_downloads": True,
             "permissions": [],
             "args": chrome_args,
+            "ignore_default_args": ["--enable-automation"],
         }
         if self.record_video:
             args["record_video_dir"] = self.record_video

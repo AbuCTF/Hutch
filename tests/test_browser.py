@@ -59,7 +59,7 @@ def test_build_args():
     port = [a for a in args if a.startswith("--remote-debugging-port=")]
     assert len(port) == 1 and port[0] != "--remote-debugging-port=0"
     assert browser.build_args("/p", port=4567).count("--remote-debugging-port=4567") == 1
-    assert "--disable-blink-features=AutomationControlled" in args
+    assert not any("AutomationControlled" in a or a in ("--test-type", "--enable-automation") for a in args)
     assert "--headless=new" in args and "--ignore-certificate-errors" in args
     assert not any("site-per-process" in a for a in args)
     plain = browser.build_args("/p", debug=False)

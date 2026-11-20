@@ -435,11 +435,10 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
         *_COMPAT_ARGS,
     ]
     if debug:
-        args += [f"--remote-debugging-port={port or free_port()}", "--disable-blink-features=AutomationControlled"]
-        if not headless:
-            # chrome flags the switch above with an "unsupported command-line flag" bar that eats 56px
-            # of the viewport and shows in screenshots; --test-type is its documented way to stay quiet
-            args.append("--test-type")
+        # never port 0: Chromium turns navigator.webdriver on for exactly that value, and the flags
+        # that used to undo it (AutomationControlled, then --test-type to hide the bar it paints)
+        # are tells of their own. A port of its own keeps webdriver false with nothing else added.
+        args.append(f"--remote-debugging-port={port or free_port()}")
     if restore:
         args.append("--restore-last-session")
     if headless:

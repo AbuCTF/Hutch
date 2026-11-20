@@ -55,10 +55,11 @@ def test_virtual_screen_args_size_the_window_to_the_work_area():
     assert any(a.startswith("--use-angle=") for a in args)
 
 
-def test_headed_chrome_hides_the_automation_flag_without_the_infobar():
-    args = browser.build_args("/p", headless=False)
-    assert "--disable-blink-features=AutomationControlled" in args and "--test-type" in args
-    assert "--test-type" not in browser.build_args("/p", headless=True)
+def test_no_launch_carries_an_automation_tell():
+    for headless in (False, True):
+        args = browser.build_args("/p", headless=headless)
+        assert not any("AutomationControlled" in a or a in ("--test-type", "--enable-automation") for a in args)
+        assert "--remote-debugging-port=0" not in args
 
 
 def test_display_sticks_to_the_profile(tmp_path):

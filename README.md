@@ -499,9 +499,14 @@ from automation itself, and these opt-ins remove them:
 - **Real Chrome, always.** `--browser` defaults to `chrome`: the installed Google Chrome, never
   Playwright's bundled chromium or Chrome for Testing (ask for `--browser chromium` by name), and a
   browser is never launched on the everyday profile in `~/.config/google-chrome`, where your logins
-  and sync live. Headed chrome gets `--disable-blink-features=AutomationControlled` with
-  `--test-type`, which keeps `navigator.webdriver` false without the "unsupported flag" bar that
-  would otherwise eat 56 px of the viewport.
+  and sync live. The debugging port is a free port of its own, never `--remote-debugging-port=0`:
+  Chromium switches `navigator.webdriver` on for that one value (measured: `true` on port 0, `false`
+  on any other port, headless and headed), so no `--disable-blink-features=AutomationControlled`
+  and no `--test-type` is needed to undo it, and those two are tells (the first also paints an
+  "unsupported flag" bar that takes 56 px of the viewport, in headless too). Chrome writes
+  `DevToolsActivePort` only for port 0, so Hutch writes it for the port it chose. Only
+  the Playwright-launched path (proxy login, video, touch personas) still passes the feature flag,
+  because Playwright's own launch leaves `webdriver` on.
 - **`clear_challenge`** clicks a Cloudflare Turnstile checkbox or a reCAPTCHA v2 box the way a person
   does, for accounts a site's own rules let you create. On a virtual screen the pointer is
   moved and pressed through the X server's XTEST extension, so the click reaches the page by the same
@@ -543,7 +548,8 @@ The same pages with `--driver cdp`, selected through `Pool.create(driver="cdp")`
 screen: the first four rounds of five cleared 16 of 16 (non-interactive 22-34 s, managed 21-40 s with
 one click, scrapingcourse 20-31 s, nopecha 25-59 s with one click). The fifth round and the reruns
 after it missed on three pages, and `patchright` missed the same pages in a control run in the same
-hour, so those were the test pages tiring of one address, not the driver.
+hour, so those were the test pages tiring of one address, not the driver. A last round with the launch
+described above (no port 0, no feature flag) went 4 of 4 for `cdp` and 3 of 4 for `patchright`.
 Five rounds is small; read it as "matches patchright", not as a rate.
 
 The 31% like-headless score is five of CreepJS's sixteen flags, and on Linux desktop Chrome they are the
