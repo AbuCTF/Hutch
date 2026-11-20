@@ -10,6 +10,7 @@ from . import __version__, browser, driver
 from .driver import DRIVERS
 from .fingerprint import generate, generate_for_program, list_presets
 from .pool import Pool, _DEFAULT_BASE_DIR
+from .registry import STATES, Registry
 from .session import ProxyConfig, Session, session_class
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
@@ -691,6 +692,33 @@ async def cmd_presets(_pool, _args):
         print(fmt.format(p["name"], p["viewport"], p["platform"], p["locale"]))
 
 
+async def cmd_registry(_pool, args):
+    reg = Registry()
+    try:
+        if args.registry_sub == "import":
+            print(json.dumps(reg.import_profiles()))
+        elif args.registry_sub == "show":
+            row = reg.get(args.profile)
+            if not row:
+                print(f"hutch: no registry row for '{args.profile}'", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(row, indent=2))
+        else:
+            rows = reg.ls(program_id=args.program, state=args.state)
+            if not rows:
+                print("(no profiles registered — run 'hutch registry import')")
+                return
+            fmt = "{:<16} {:<4} {:<9} {:<24} {:>4} {:>4} {:>5} {}"
+            print(fmt.format("PROGRAM", "ROLE", "STATE", "PROFILE", "USE", "CHAL", "RATE", "PROXY"))
+            for r in rows:
+                rate = f"{r['challenge_count'] / r['sessions_count']:.0%}" if r["sessions_count"] else "-"
+                print(fmt.format(r["program_id"] or "-", r["role"] or "-", r["state"],
+                                 r["profile_name"][:24], r["sessions_count"], r["challenge_count"],
+                                 rate, r["proxy_id"] or "-"))
+    finally:
+        reg.close()
+
+
 async def cmd_caido(_pool, args):
     from .caido import CaidoClient, CaidoConfig, CaidoError
     sub = args.caido_sub
@@ -885,7 +913,8 @@ def main():
             "  caido scope-check <url>  check if URL is in scope\n"
             "\n"
             "other:\n"
-            "  presets          list fingerprint presets"
+            "  presets          list fingerprint presets\n"
+            "  registry         warm-profile registry: ls, show, import"
         ),
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -1138,6 +1167,16 @@ def main():
     cs = caido_sub.add_parser("scope-check", help="check if URL is in scope")
     cs.add_argument("url", help="URL to check")
     c.set_defaults(func=cmd_caido)
+
+    c = _sub("registry", help="per-program warm-profile registry")
+    rsub = c.add_subparsers(dest="registry_sub", required=True)
+    rl = rsub.add_parser("ls", help="list profile assignments (which identity serves which program)")
+    rl.add_argument("program", nargs="?", help="filter by program id")
+    rl.add_argument("--state", choices=STATES, help="filter by state")
+    rsh = rsub.add_parser("show", help="show one profile's registry row")
+    rsh.add_argument("profile", help="profile name")
+    rsub.add_parser("import", help="seed the registry from existing profiles; quarantine proxy-null ones")
+    c.set_defaults(func=cmd_registry)
 
     args = p.parse_args()
     if not args.command:
