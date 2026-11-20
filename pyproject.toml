@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hutch"
-version = "0.32.7"
+version = "0.32.8"
 description = "stealth browser orchestrator on real Chrome: persistent sessions, Cloudflare challenge clearing, MCP, CLI and Python API"
 readme = "README.md"
 requires-python = ">=3.10"

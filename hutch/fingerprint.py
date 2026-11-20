@@ -2,7 +2,23 @@ import hashlib
 import random
 from typing import Optional
 
-from .session import Fingerprint
+from .session import Fingerprint, _match_engine
+
+_CHROME_VERSION = None
+
+
+def _installed_chrome_version():
+    """The real installed Chrome version, cached. A generated persona should claim the version actually
+    on the box, not a pinned-and-stale major. None when no Chrome is found (the preset's major stands)."""
+    global _CHROME_VERSION
+    if _CHROME_VERSION is None:
+        from . import browser
+        try:
+            exe = browser.find_executable()
+            _CHROME_VERSION = browser.browser_version(exe) if exe else ""
+        except Exception:
+            _CHROME_VERSION = ""
+    return _CHROME_VERSION or None
 
 
 _PRESETS = [
@@ -92,7 +108,7 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
     # Use the chosen preset's locale/timezone by default — a US-Windows UA with a random
     # it-IT locale (the old behavior for name-seeded fingerprints) is internally
     # inconsistent and detectable. Only override when the caller explicitly asks.
-    return Fingerprint(
+    fp = Fingerprint(
         viewport_width=vw,
         viewport_height=vh,
         screen_width=sw,
@@ -106,6 +122,8 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
         disable_webrtc=True,
         sec_ch_ua=p.get("sec_ch_ua"),   # carry the client-hint brands so they match the UA
     )
+    _match_engine(fp, _installed_chrome_version())   # retire the stale Chrome-major pin at birth
+    return fp
 
 
 def generate_for_program(program_name: str, **kwargs) -> Fingerprint:
