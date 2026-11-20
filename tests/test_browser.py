@@ -56,7 +56,9 @@ def test_legacy_meta_stays_on_playwright(tmp_path):
 def test_build_args():
     args = browser.build_args("/p", headless=True, proxy="http://127.0.0.1:8080",
                               ignore_https_errors=True)
-    assert "--remote-debugging-port=0" in args
+    port = [a for a in args if a.startswith("--remote-debugging-port=")]
+    assert len(port) == 1 and port[0] != "--remote-debugging-port=0"
+    assert browser.build_args("/p", port=4567).count("--remote-debugging-port=4567") == 1
     assert "--disable-blink-features=AutomationControlled" in args
     assert "--headless=new" in args and "--ignore-certificate-errors" in args
     assert not any("site-per-process" in a for a in args)
@@ -191,3 +193,30 @@ def test_the_everyday_profile_is_never_launched(tmp_path, monkeypatch):
     assert browser.main_profile(tmp_path / ".hutch" / "profiles" / "x") is None
     with pytest.raises(browser.BrowserError, match="everyday chrome profile"):
         browser.spawn(str(main), headless=True)
+
+
+def test_a_fixed_port_is_published_for_the_files_readers(tmp_path):
+    import http.server
+    import json as _json
+    import threading
+
+    class Version(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = _json.dumps({"webSocketDebuggerUrl": f"ws://127.0.0.1:{self.server.server_port}/devtools/browser/abc"})
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Version)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_port
+        assert browser.publish_endpoint(str(tmp_path), 1) is None
+        assert browser.publish_endpoint(str(tmp_path), port) == (port, f"ws://127.0.0.1:{port}/devtools/browser/abc")
+        assert browser.read_endpoint(str(tmp_path)) == (port, f"ws://127.0.0.1:{port}/devtools/browser/abc")
+    finally:
+        server.shutdown()

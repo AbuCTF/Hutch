@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import warnings
 
@@ -244,6 +245,31 @@ def read_endpoint(user_data_dir):
     return port, ws
 
 
+def free_port():
+    """A loopback port nothing is listening on right now."""
+    import socket
+    with contextlib.closing(socket.socket()) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def publish_endpoint(user_data_dir, port):
+    """Write the DevToolsActivePort file for a browser started on a fixed debugging port.
+
+    Chrome writes that file itself only for ``--remote-debugging-port=0``, the one value that also
+    turns ``navigator.webdriver`` on, so a browser launched on a port of its own gets the same file
+    from here and everything that reads it (``status``, ``read_endpoint``, other processes) is
+    unchanged. Returns ``(port, ws_url)`` once the browser answers, else None.
+    """
+    try:
+        ws = _http_json(port, "/json/version", timeout=0.7)["webSocketDebuggerUrl"]
+    except Exception:
+        return None
+    with open(os.path.join(user_data_dir, _PORT_FILE), "w") as f:
+        f.write(f"{port}\n{urllib.parse.urlsplit(ws).path}\n")
+    return port, ws
+
+
 def _port_open(port):
     import socket
     with contextlib.closing(socket.socket()) as s:
@@ -400,7 +426,7 @@ def gpu_args():
 def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=None,
                proxy=None, proxy_bypass=None, strict_proxy=True, ignore_https_errors=False,
                window_size=None, lang=None, user_agent=None, window_class=None, maximize=True,
-               screen=None, touch=False, virtual=None, extra=()):
+               screen=None, touch=False, virtual=None, port=None, extra=()):
     args = [
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
@@ -409,7 +435,7 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
         *_COMPAT_ARGS,
     ]
     if debug:
-        args += ["--remote-debugging-port=0", "--disable-blink-features=AutomationControlled"]
+        args += [f"--remote-debugging-port={port or free_port()}", "--disable-blink-features=AutomationControlled"]
         if not headless:
             # chrome flags the switch above with an "unsupported command-line flag" bar that eats 56px
             # of the viewport and shows in screenshots; --test-type is its documented way to stay quiet
@@ -544,7 +570,8 @@ def spawn(user_data_dir, *, browser=None, headless=False, debug=True, tie_to_par
         vdisplay = VirtualDisplay(screen_size or SIZE).start()
         kw["virtual"] = vdisplay.size
     try:
-        args = [executable] + build_args(user_data_dir, headless=headless, debug=debug, **kw)
+        port = free_port() if debug else None
+        args = [executable] + build_args(user_data_dir, headless=headless, debug=debug, port=port, **kw)
         log = open(os.path.join(user_data_dir, _LOG_FILE), "wb")
         popen = {"stdout": log, "stderr": log, "stdin": subprocess.DEVNULL,
                  "env": {**os.environ, **(env or {})}}
@@ -552,7 +579,7 @@ def spawn(user_data_dir, *, browser=None, headless=False, debug=True, tie_to_par
             popen["env"] = vdisplay.apply(popen["env"])
         return _launch(user_data_dir, args, popen, log, headless=headless, debug=debug, browser=browser,
                        executable=executable, tie_to_parent=tie_to_parent, timeout=timeout, kw=kw,
-                       vdisplay=vdisplay)
+                       vdisplay=vdisplay, port=port)
     except BaseException:
         if vdisplay:
             vdisplay.stop()
@@ -560,7 +587,7 @@ def spawn(user_data_dir, *, browser=None, headless=False, debug=True, tie_to_par
 
 
 def _launch(user_data_dir, args, popen, log, *, headless, debug, browser, executable, tie_to_parent,
-            timeout, kw, vdisplay):
+            timeout, kw, vdisplay, port=None):
     if sys.platform == "win32":
         popen["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         if not tie_to_parent:
@@ -590,7 +617,7 @@ def _launch(user_data_dir, args, popen, log, *, headless, debug, browser, execut
                 "browser": browser, "agent_access": False, "process": proc, **shown}
     deadline = time.time() + timeout
     while time.time() < deadline:
-        ep = read_endpoint(user_data_dir)
+        ep = read_endpoint(user_data_dir) or (publish_endpoint(user_data_dir, port) if port else None)
         if ep:
             _settle(ep[0])
             return {"pid": proc.pid, "port": ep[0], "ws": ep[1], "headless": headless,

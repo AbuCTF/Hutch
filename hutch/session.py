@@ -505,11 +505,12 @@ class Session:
         return f"hutch-browser-{suffix[:48]}" if suffix else "hutch-browser"
 
     def _launch_args(self):
+        self._debug_port = _browser.free_port()
         fp = self.fingerprint
         chrome_args = [
             "--no-first-run",
             "--no-default-browser-check",
-            "--remote-debugging-port=0",
+            f"--remote-debugging-port={self._debug_port}",
         ]
         if (self.proxy and self.strict_proxy) or self._net_proxy:
             chrome_args += list(_browser._STRICT_ARGS)
@@ -737,6 +738,7 @@ class Session:
         self._context = await playwright.chromium.launch_persistent_context(**kwargs)
         self._owned = True
         self._context.on("close", lambda _: self._on_browser_gone())
+        await asyncio.to_thread(_browser.publish_endpoint, self.profile_dir, self._debug_port)
 
     def spawn_options(self, *, restore=True):
         """Keyword arguments for browser.spawn() that reproduce this session's setup."""
