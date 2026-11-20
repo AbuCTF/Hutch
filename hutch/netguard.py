@@ -97,9 +97,20 @@ async def _system_resolve(host, port, timeout=DNS_TIMEOUT):
 
 
 class PrivateNetworkGuard:
-    def __init__(self, resolver=None, ttl=300):
+    """``ttl`` is how long a verdict from a successful lookup is kept. A lookup that fails is a
+    transient fault, not a verdict about the host: it is retried ``retries`` times, shared by every
+    request waiting on the same name, and remembered for ``neg_ttl`` seconds only, so a burst of
+    requests does not each repeat it but a recovered resolver is trusted again at once. (Caching a
+    failure for the full ttl once turned a busy moment's DNS timeout into five minutes of refusing a
+    perfectly good host.)"""
+
+    def __init__(self, resolver=None, ttl=300, neg_ttl=2.0, retries=3, retry_delay=0.25):
         self._resolve = resolver or _system_resolve
         self._ttl = ttl
+        self._neg_ttl = neg_ttl
+        self._retries = max(1, retries)
+        self._retry_delay = retry_delay
+        self._inflight = {}
         self._cache = {}
         self.blocked = []  # refused urls, newest last, at most 100
         self.deny = None  # optional callable(host) -> True for hosts never to contact
@@ -123,12 +134,29 @@ class PrivateNetworkGuard:
         cached = self._cache.get(host)
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        try:
-            addresses = await self._resolve(host, parts.port or (443 if scheme in ("https", "wss") else 80))
-        except OSError:
-            addresses = []
+        port = parts.port or (443 if scheme in ("https", "wss") else 80)
+        pending = self._inflight.get(host)
+        if pending is None:
+            pending = self._inflight[host] = asyncio.ensure_future(self._verdict(host, port))
+            pending.add_done_callback(lambda _, h=host: self._inflight.pop(h, None))
+        return await asyncio.shield(pending)
+
+    async def _lookup(self, host, port):
+        for attempt in range(self._retries):
+            try:
+                addresses = await self._resolve(host, port)
+            except OSError:
+                addresses = []
+            if addresses:
+                return addresses
+            if attempt + 1 < self._retries:
+                await asyncio.sleep(self._retry_delay * (attempt + 1))
+        return []
+
+    async def _verdict(self, host, port):
+        addresses = await self._lookup(host, port)
         ok = bool(addresses) and all(is_public_ip(a) for a in addresses)
-        self._cache[host] = (time.monotonic() + self._ttl, ok)
+        self._cache[host] = (time.monotonic() + (self._ttl if addresses else self._neg_ttl), ok)
         return ok
 
     def _note(self, url):

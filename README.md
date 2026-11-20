@@ -380,6 +380,57 @@ from automation itself, and three opt-ins remove them:
   input event. It hedges against simple behavioural rules; it is not cover against vendors that
   model a whole session, so hand those steps to a person.
 
+- **`display: virtual`** (`--display virtual`, with `--headed`) runs the real, headed Google Chrome on a
+  private [Xvfb](https://www.x.org/wiki/) screen of exactly 1920x1080 and no window manager. Tiling
+  window managers (Hyprland, i3, sway) ignore `--window-size` and squeeze a headed window into a tile,
+  a viewport of 771x326 on a 2560x1440 screen in the test that prompted this; headless chrome has
+  tells of its own. On a virtual screen the browser gets the whole display, a real X11 window and the
+  host GPU through its render node for WebGL (software rendering when there is none), and nothing can
+  resize it. `real` (the default where there is a desktop) opens on your desktop, for a person to
+  watch or to take over; `auto` picks virtual only on a machine with no display at all. Needs
+  `Xvfb` (`pacman -S xorg-server-xvfb`, `apt install xvfb`) and only on Linux.
+- **Real Chrome, always.** `--browser` defaults to `chrome`: the installed Google Chrome, never
+  Playwright's bundled chromium or Chrome for Testing (ask for `--browser chromium` by name), and a
+  browser is never launched on the everyday profile in `~/.config/google-chrome`, where your logins
+  and sync live. Headed chrome gets `--disable-blink-features=AutomationControlled` with
+  `--test-type`, which keeps `navigator.webdriver` false without the "unsupported flag" bar that
+  would otherwise eat 56 px of the viewport.
+- **`clear_challenge`** clicks a Cloudflare Turnstile checkbox or a reCAPTCHA v2 box the way a person
+  does, for the test accounts a program's own rules let you make. On a virtual screen the pointer is
+  moved and pressed through the X server's XTEST extension, so the click reaches the page by the same
+  path a mouse's does; elsewhere it is sent over DevTools. The pointer arrives from elsewhere over a
+  curved path, hovers on the box, presses for a human-length hold, and nothing is clicked while a
+  managed widget is still "Verifying". An image grid is never attempted: the status is
+  `grid-required`. A session tagged `forbids_bypass` (`--tag forbids_bypass=true`) is never clicked:
+  the status is `hitl`, for a person. Works with every driver.
+
+      await session.clear_challenge(timeout=60)
+      # {"status": "passed", "kind": "turnstile", "seconds": 21.4, "clicks": 1, "clicked": true}
+
+`hutch.cdp` is a small DevTools client of Hutch's own for callers that want a browser with no
+automation library attached at all. It sends only what it is asked to, never `Runtime.enable` or
+`Console.enable`, and `challenge.RawSurface` lets `clear_challenge` run on it. `hutch.xinput`
+sends mouse and key events through the X server on a virtual screen.
+
+Measured on 2026-11-20 with `--driver patchright --browser chrome --headed --display virtual` (Google
+Chrome 156, a fresh profile per run, a residential connection), public test pages only:
+
+| Page | Result |
+|------|--------|
+| [peet.ws Turnstile, non-interactive](https://peet.ws/turnstile-test/non-interactive.html) | real token, 9 of 10 runs (the miss was while the machine was busy), 14-43 s |
+| [scrapingcourse Cloudflare challenge](https://www.scrapingcourse.com/cloudflare-challenge) | cleared, 5 of 5, 21-38 s |
+| [peet.ws Turnstile, managed](https://peet.ws/turnstile-test/managed.html) | `clear_challenge` clicked the checkbox once, passed 5 of 5, 20-42 s |
+| [nopecha Cloudflare interstitial](https://nopecha.com/demo/cloudflare) | `clear_challenge` clicked once, passed 5 of 5, 18-45 s |
+| reCAPTCHA v2 ([Google's demo](https://www.google.com/recaptcha/api2/demo)) | box clicked, image grid opened, status `grid-required` in 4 s, nothing guessed |
+| [sannysoft](https://bot.sannysoft.com/) | 31 of 31 |
+| [CreepJS](https://abrahamjuliot.github.io/creepjs/) | headless 0%, stealth 0%, like-headless 31% (38% on the same machine with a tiled window) |
+| viewport | screen 1920x1080, window 1920x1048, page 1920x961, `navigator.webdriver` false |
+
+The interstitial row came after a finding worth knowing: a Cloudflare interstitial passes when the
+page is only watched through DevTools DOM reads and fails every time when a script is run in it on a
+poll (0 of 16 attempts before the change, 8 of 8 after), so `clear_challenge` never scripts a page that
+shows one. If you poll such a page yourself, expect to be trusted less.
+
 Measured on 2026-11-11, headless, Linux (WSL2), no persona:
 
 | Check | playwright + bundled Chromium | patchright + Google Chrome 157 |

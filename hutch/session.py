@@ -17,6 +17,8 @@ from enum import Enum
 from typing import Optional
 
 from . import browser as _browser
+from . import challenge as _challenge
+from . import display as _display
 from . import driver as _driver
 from . import human as _human
 from . import tz as _tz
@@ -275,11 +277,17 @@ class Session:
                  proxy=None, fingerprint=None, headless=True,
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
-                 browser="chromium", endpoint=None, strict_proxy=True, require_proxy=False,
-                 block_private=False, driver="playwright", humanize=False):
+                 browser=None, endpoint=None, strict_proxy=True, require_proxy=False,
+                 block_private=False, driver="playwright", humanize=False, display="auto"):
         self.name = name
         # move, click, type and scroll with a person's timing instead of teleporting; sticks to the profile
         self.humanize = humanize
+        # headed browsers: "real" opens on the desktop, "virtual" on a private Xvfb screen no window
+        # manager can resize, "auto" picks virtual only where there is no desktop at all
+        if display not in ("auto", "real", "virtual"):
+            raise ValueError(f"unknown display '{display}', expected auto, real or virtual")
+        self.display = display
+        self._vdisplay = None
         # playwright, or patchright (no Runtime.enable / Console.enable traces); sticks to the profile
         self.driver = _driver.check(driver or "playwright")
         # opt-in: refuse every request to loopback, private, link-local and other internal addresses
@@ -298,7 +306,7 @@ class Session:
         self.persona = fingerprint is not None
         self.fingerprint = fingerprint or Fingerprint()
         self.headless = headless
-        self.browser = browser or "chromium"
+        self.browser = browser or _browser.DEFAULT_BROWSER
         self.endpoint = endpoint
         if endpoint:
             launcher = "external"
@@ -356,6 +364,7 @@ class Session:
         self._focus = None
         self._close_callbacks = []
         self.auth = None
+        self.challenge = None  # the last clear_challenge() result: "grid-required" waits for a solver
 
         os.makedirs(profile_dir, exist_ok=True)
         self._save_meta()
@@ -398,6 +407,7 @@ class Session:
             "block_private": self.block_private,
             "driver": self.driver,
             "humanize": self.humanize,
+            "display": self.display,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -454,6 +464,7 @@ class Session:
             block_private=meta.get("block_private", False),
             driver=meta.get("driver", "playwright"),
             humanize=meta.get("humanize", False),
+            display=meta.get("display", "auto"),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -462,6 +473,22 @@ class Session:
             s._save_meta()
         return s
 
+    @property
+    def screen(self):
+        """The size of the screen a headed browser gets: the persona's, else a 1920x1080 monitor."""
+        fp = self.fingerprint
+        return (fp.screen_width, fp.screen_height) if self.persona else _display.SIZE
+
+    def _screen_kind(self):
+        """"virtual" or "real" for a headed browser, None for headless or an attached one."""
+        if self.headless or self.endpoint:
+            return None
+        if self.display == "auto":
+            return "virtual" if not _display.has_screen() and _display.available() else "real"
+        if self.display == "virtual" and not _display.available():
+            raise RuntimeError(f"display=virtual needs Xvfb, {_display.INSTALL}")
+        return self.display
+
     def _window_class(self):
         suffix = re.sub(r"[^a-z0-9-]+", "-", self.name.lower()).strip("-")
         return f"hutch-browser-{suffix[:48]}" if suffix else "hutch-browser"
@@ -469,19 +496,25 @@ class Session:
     def _launch_args(self):
         fp = self.fingerprint
         chrome_args = [
-            "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
             "--remote-debugging-port=0",
         ]
         if (self.proxy and self.strict_proxy) or self._net_proxy:
             chrome_args += list(_browser._STRICT_ARGS)
-        if not self.headless:
-            chrome_args.append(f"--class={self._window_class()}")
+        if self.headless:
+            chrome_args.append("--disable-blink-features=AutomationControlled")
+        else:
+            chrome_args += [f"--class={self._window_class()}",
+                            "--disable-blink-features=AutomationControlled", "--test-type"]
             # Hyprland owns tiled window geometry. Asking Chromium to maximize
             # is commonly suppressed by compositor policy and can leave its
             # render surface at the default size until DevTools forces a reset.
-            if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            if self._screen_kind() == "virtual":
+                x, y, w, h = _display.work_area(self.screen)
+                chrome_args += ["--ozone-platform=x11", f"--window-position={x},{y}",
+                                f"--window-size={w},{h}", *_browser.gpu_args()]
+            elif not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
                 chrome_args.append("--start-maximized")
         if fp.disable_webrtc:
             chrome_args.extend([
@@ -492,7 +525,7 @@ class Session:
             "user_data_dir": self.profile_dir,
             "headless": self.headless,
             # full binary in both modes: same profile lock, codecs and version as headed
-            "channel": "chromium",
+            "channel": "chrome" if self.browser == "chrome" else "chromium",
             "viewport": None if not self.headless else {"width": fp.viewport_width, "height": fp.viewport_height},
             "screen": {"width": fp.screen_width, "height": fp.screen_height},
             "locale": fp.locale,
@@ -678,14 +711,18 @@ class Session:
         kwargs = self._launch_args()
         if self.proxy:
             await asyncio.to_thread(_browser._require_proxy, self.proxy.server)
+        exe = await asyncio.to_thread(_browser.find_executable, self.browser) \
+            if self.browser == "chrome" else playwright.chromium.executable_path
         if self.persona:
-            _match_engine(self.fingerprint, await asyncio.to_thread(
-                _browser.browser_version, playwright.chromium.executable_path))
+            _match_engine(self.fingerprint, await asyncio.to_thread(_browser.browser_version, exe))
             if self.fingerprint.user_agent:
                 kwargs["user_agent"] = self.fingerprint.user_agent
         elif self.headless:
             kwargs["user_agent"] = _browser.real_user_agent(await asyncio.to_thread(
-                _browser.browser_version, playwright.chromium.executable_path))
+                _browser.browser_version, exe))
+        if self._screen_kind() == "virtual":
+            self._vdisplay = await asyncio.to_thread(_display.VirtualDisplay(self.screen).start)
+            kwargs["env"] = self._vdisplay.apply(os.environ)
         self._context = await playwright.chromium.launch_persistent_context(**kwargs)
         self._owned = True
         self._context.on("close", lambda _: self._on_browser_gone())
@@ -702,6 +739,8 @@ class Session:
         if not self.headless:
             kw["window_class"] = self._window_class()
             kw["maximize"] = not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+            kw["display"] = self._screen_kind() or "real"
+            kw["screen_size"] = self.screen
         if self.proxy:
             kw["proxy"] = self.proxy.server
             kw["proxy_bypass"] = self.proxy.bypass
@@ -2689,6 +2728,35 @@ class Session:
             state, reason = SessionState.PAUSED.value, waiting.get("reason")
         return state, reason, waiting
 
+    async def clear_challenge(self, *, timeout=60.0, forbids_bypass=None):
+        """Click the "verify you are human" checkbox on the active tab the way a person would.
+
+        For test accounts a program's rules allow us to make. Handles a Cloudflare Turnstile checkbox
+        (managed, or the full-page check) and a reCAPTCHA v2 box; waits for the widget to settle and
+        returns {"status": "clear" | "passed" | "grid-required" | "hitl" | "timeout", "kind", "seconds",
+        "clicks"}. An image grid is not attempted: the status is "grid-required" and the page is left
+        as it is. With the ``forbids_bypass`` tag on the session (or ``forbids_bypass=True``) nothing is
+        clicked and the status is "hitl", for a program that does not allow bypassing its checks.
+        """
+        self._require_active()
+        page = self._active_page()
+        if not page:
+            raise RuntimeError(f"session '{self.name}' has no open page")
+        self._last_activity = time.time()
+        if forbids_bypass is None:
+            forbids_bypass = str(self.tags.get("forbids_bypass", "")).lower() in ("1", "true", "yes")
+        running = _browser.status(self.profile_dir) if self._owned else None
+        xdisplay = (running or {}).get("display") or (self._vdisplay.display if self._vdisplay else None)
+        surf = _challenge.surface(page, xdisplay)
+        try:
+            result = await _challenge.clear(
+                surf, timeout=timeout, forbids_bypass=forbids_bypass,
+                on_event=lambda _kind, **data: self.events.emit("challenge", **data))
+        finally:
+            await surf.close()
+        self.challenge = {**result, "at": round(time.time())}
+        return result
+
     async def await_human(self, reason="challenge", *, until=None, timeout=600, poll=2.0,
                           screenshot=True, artifacts=None):
         """Hand the browser to a person and wait until they are done.
@@ -2985,6 +3053,10 @@ class Session:
                 self.state = SessionState.HIBERNATED
             if not keep_browser:
                 await self._stop_net_proxy()
+                if self._vdisplay:
+                    await asyncio.to_thread(self._vdisplay.stop)
+                    self._vdisplay = None
+                await asyncio.to_thread(_browser.reap_display, self.profile_dir)
         finally:
             self._closing = False
 
@@ -3093,6 +3165,8 @@ class Session:
             "driver": self.driver,
             "block_private": self.block_private,
             "humanize": self.humanize,
+            "display": self.display,
+            "challenge": self.challenge["status"] if self.challenge else None,
             "owned": self._owned if self.is_alive else None,
             "running": self.running,
             "pid": self._pid,

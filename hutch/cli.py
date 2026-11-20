@@ -83,6 +83,8 @@ def _load(args, name, *, create=False):
             s.driver, changed = args.driver, True
         if getattr(args, "humanize", False) and not s.humanize:
             s.humanize, changed = True, True
+        if getattr(args, "display", None) and args.display != s.display:
+            s.display, changed = args.display, True
         if changed:
             s._save_meta()
         return s
@@ -109,10 +111,11 @@ def _load(args, name, *, create=False):
         else not getattr(args, "headed", False),
         ignore_https_errors=getattr(args, "ignore_https_errors", False),
         tags=tags,
-        browser=getattr(args, "browser", None) or "chromium",
+        browser=getattr(args, "browser", None),
         block_private=getattr(args, "block_private", False),
         driver=getattr(args, "driver", None) or "playwright",
         humanize=getattr(args, "humanize", False),
+        display=getattr(args, "display", None) or "auto",
     )
     print(f"created: {name}")
     return s
@@ -876,7 +879,7 @@ def main():
 
     def _common(c, *, persona=False):
         c.add_argument("--browser", metavar="NAME",
-                       help="chromium, chrome, brave, edge or a binary path")
+                       help="chrome (default), chromium, brave, edge or a binary path")
         c.add_argument("--force", action="store_true", help="allow changing a profile's browser")
         c.add_argument("--proxy", metavar="URL", help="proxy server (http/socks5)")
         c.add_argument("--caido", type=int, nargs="?", const=_CAIDO_DEFAULT_PORT,
@@ -888,6 +891,9 @@ def main():
         c.add_argument("--driver", choices=("playwright", "patchright"),
                        help="automation driver; patchright leaves no CDP traces for bot detectors "
                             "(sticks to the profile)")
+        c.add_argument("--display", choices=("auto", "real", "virtual"),
+                       help="headed browsers: real = on your desktop, virtual = a private 1920x1080 "
+                            "Xvfb screen that no window manager can resize (sticks to the profile)")
         c.add_argument("--humanize", action="store_true",
                        help="move, click, type and scroll with a person's timing (sticks to the profile)")
         if persona:

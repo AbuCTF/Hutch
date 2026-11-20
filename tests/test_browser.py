@@ -165,3 +165,29 @@ async def test_joining_client_acts_on_the_tab_in_front(base, site):
         async with Pool(base_dir=base) as agent:
             other = await agent.get("front", launch=True)
             assert other._active_page().url.endswith("?b")
+
+
+def test_chrome_is_the_default_browser():
+    assert browser.DEFAULT_BROWSER == "chrome"
+    assert Session("d", "/tmp/hutch-default-test").browser == "chrome"
+
+
+def test_chrome_never_resolves_to_a_test_build(tmp_path, monkeypatch):
+    fake = tmp_path / "ms-playwright" / "chrome"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("HUTCH_CHROME", str(fake))
+    monkeypatch.setitem(browser._CANDIDATES["chrome"], "linux", [])
+    with pytest.raises(browser.BrowserError, match="not stock Google Chrome"):
+        browser.find_executable("chrome")
+
+
+def test_the_everyday_profile_is_never_launched(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    main = tmp_path / ".config" / "google-chrome"
+    assert browser.main_profile(main) == "chrome"
+    assert browser.main_profile(main / "Default") == "chrome"
+    assert browser.main_profile(tmp_path / ".hutch" / "profiles" / "x") is None
+    with pytest.raises(browser.BrowserError, match="everyday chrome profile"):
+        browser.spawn(str(main), headless=True)

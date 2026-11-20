@@ -4,12 +4,17 @@ import glob
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
 import urllib.request
+import warnings
+
+# browsers are detached on purpose and outlive the Popen object that started them
+warnings.filterwarnings("ignore", message="subprocess .* is still running", category=ResourceWarning)
 
 _STATE_FILE = "hutch_browser.json"
 _LOG_FILE = "hutch_browser.log"
@@ -29,6 +34,13 @@ _CLONE_SKIP = {
 
 class BrowserError(RuntimeError):
     pass
+
+
+# Hutch drives the browser people really use. Playwright's bundled chromium, Chrome for Testing and
+# headless-shell builds are different binaries with different fingerprints, so "chrome" never
+# resolves to one of them; ask for "chromium" by name to get the bundled build.
+DEFAULT_BROWSER = "chrome"
+_NOT_STOCK = re.compile(r"ms-playwright|chrome-for-testing|chromium|headless_shell", re.I)
 
 
 def is_wsl():
@@ -68,7 +80,7 @@ def _playwright_chromium():
 
 _CANDIDATES = {
     "chrome": {
-        "linux": ["google-chrome", "google-chrome-stable"],
+        "linux": ["/opt/google/chrome/chrome", "google-chrome-stable", "google-chrome"],
         "darwin": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
         "win32": [r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe",
                   r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"],
@@ -100,9 +112,9 @@ _USER_DATA = {
 }
 
 
-def find_executable(browser="chromium"):
-    """Resolve chromium|chrome|brave|edge or an explicit path to an executable."""
-    browser = browser or "chromium"
+def find_executable(browser=None):
+    """Resolve chrome|chromium|brave|edge or an explicit path to an executable. Default: chrome."""
+    browser = browser or DEFAULT_BROWSER
     if os.sep in browser or browser.endswith(".exe"):
         if os.path.exists(browser):
             return browser
@@ -113,16 +125,43 @@ def find_executable(browser="chromium"):
             return path
         raise BrowserError("bundled chromium missing, run: playwright install chromium")
     if browser not in _CANDIDATES:
-        raise BrowserError(f"unknown browser '{browser}', use chromium, chrome, brave, edge or a path")
+        raise BrowserError(f"unknown browser '{browser}', use chrome, chromium, brave, edge or a path")
     plat = "win32" if sys.platform == "win32" else sys.platform
-    for cand in _CANDIDATES[browser].get(plat, []):
+    candidates = list(_CANDIDATES[browser].get(plat, []))
+    if browser == "chrome" and os.environ.get("HUTCH_CHROME"):
+        candidates.insert(0, os.environ["HUTCH_CHROME"])
+    for cand in candidates:
         cand = os.path.expandvars(cand)
         found = cand if os.path.isabs(cand) else shutil.which(cand)
         if found and os.path.exists(found):
+            if browser == "chrome" and _NOT_STOCK.search(os.path.realpath(found)):
+                raise BrowserError(f"{found} is not stock Google Chrome")
             return found
     hint = " (the Windows install is not usable from inside WSL; install the Linux build or use 'hutch attach')" \
         if is_wsl() else ""
+    if browser == "chrome":
+        hint += ", install google-chrome-stable or pass --browser chromium for the bundled build"
     raise BrowserError(f"{browser} not found{hint}")
+
+
+def main_profile(path):
+    """The everyday browser profile ``path`` is, or sits inside, else None.
+
+    That directory holds a person's logins, history and sync. Hutch never launches a browser on it:
+    use ``hutch attach`` to borrow that browser, or a profile of its own.
+    """
+    try:
+        real = os.path.realpath(os.path.expanduser(str(path)))
+    except (OSError, ValueError):
+        return None
+    for name in _USER_DATA:
+        try:
+            root = os.path.realpath(default_user_data_dir(name))
+        except BrowserError:
+            continue
+        if real == root or real.startswith(root + os.sep):
+            return name
+    return None
 
 
 def default_user_data_dir(browser):
@@ -286,8 +325,22 @@ def status(user_data_dir):
         "headless": state.get("headless") if state.get("pid") == pid else None,
         "browser": state.get("browser"),
         "proxy": state.get("proxy") if state.get("pid") == pid else None,
+        "display": state.get("display") if state.get("pid") == pid else None,
         "agent_access": bool(ep),
     }
+
+
+def reap_display(user_data_dir):
+    """Stop the virtual screen of a browser that has exited. Xvfb quits with its last client anyway;
+    this covers one that never got a client."""
+    state = read_state(user_data_dir)
+    if state.get("xvfb_pid") and not _pid_alive(state.get("pid")):
+        from .display import VirtualDisplay
+        VirtualDisplay.stop_pid(state["xvfb_pid"])
+        state["xvfb_pid"] = state["display"] = None
+        with contextlib.suppress(OSError):
+            with open(os.path.join(user_data_dir, _STATE_FILE), "w") as f:
+                json.dump(state, f)
 
 
 # with a proxy, nothing of chromium's own (updates, sync, hints, reporting) should knock on it
@@ -335,10 +388,19 @@ def headless_display(screen, desktop, *, touch=False, window_size=None):
     return [f"--screen-info={{0,0 {width}x{height} {edge}={inset}}}", _POINTER[bool(touch)]], window
 
 
+def gpu_args():
+    """WebGL on a screen without a GPU of its own: the host's real GPU through its render node when
+    there is one, else the software rasteriser. Chrome offers no WebGL at all on Xvfb by default,
+    and a page with none is a stronger tell than either of these."""
+    if glob.glob("/dev/dri/renderD*") and os.access(glob.glob("/dev/dri/renderD*")[0], os.R_OK | os.W_OK):
+        return ["--use-angle=gl-egl", "--ignore-gpu-blocklist"]
+    return ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+
+
 def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=None,
                proxy=None, proxy_bypass=None, strict_proxy=True, ignore_https_errors=False,
                window_size=None, lang=None, user_agent=None, window_class=None, maximize=True,
-               screen=None, touch=False, extra=()):
+               screen=None, touch=False, virtual=None, extra=()):
     args = [
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
@@ -348,6 +410,10 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
     ]
     if debug:
         args += ["--remote-debugging-port=0", "--disable-blink-features=AutomationControlled"]
+        if not headless:
+            # chrome flags the switch above with an "unsupported command-line flag" bar that eats 56px
+            # of the viewport and shows in screenshots; --test-type is its documented way to stay quiet
+            args.append("--test-type")
     if restore:
         args.append("--restore-last-session")
     if headless:
@@ -356,6 +422,15 @@ def build_args(user_data_dir, *, headless=False, debug=True, restore=True, url=N
             display, window_size = headless_display(screen, desktop_of(user_agent), touch=touch,
                                                     window_size=window_size)
             args += display
+    elif virtual:
+        # a private X screen without a window manager: nothing tiles or resizes the window, so it is
+        # placed under the top bar and sized to the rest of the screen, as a maximised window would be
+        if window_class:
+            args.append(f"--class={window_class}")
+        from .display import work_area
+        x, y, w, h = work_area(virtual)
+        args += ["--ozone-platform=x11", f"--window-position={x},{y}", *gpu_args()]
+        window_size = window_size or (w, h)
     else:
         if window_class:
             args.append(f"--class={window_class}")
@@ -435,13 +510,20 @@ def _kill_with_parent(proc):
         _JOBS.append(job)
 
 
-def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_to_parent=False,
-          env=None, timeout=20.0, **kw):
+def spawn(user_data_dir, *, browser=None, headless=False, debug=True, tie_to_parent=False,
+          env=None, timeout=20.0, display="real", screen_size=None, **kw):
     """Start a detached browser on the profile. Returns status() once it is reachable.
 
     If the profile is already open, chromium hands the request to the running instance
     (new window / url) and the existing browser is returned instead.
+
+    ``display="virtual"`` runs a headed browser on its own Xvfb screen (``screen_size``, default
+    1920x1080) so no window manager can resize it; headless browsers ignore it.
     """
+    browser = browser or DEFAULT_BROWSER
+    if (taken := main_profile(user_data_dir)):
+        raise BrowserError(f"{user_data_dir} is the everyday {taken} profile, hutch only launches a browser "
+                           f"on a profile of its own (use 'hutch attach {taken}' to borrow that browser)")
     os.makedirs(user_data_dir, exist_ok=True)
     running = status(user_data_dir)
     if running:
@@ -456,10 +538,29 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
     if not kw.get("url") and not os.path.isdir(os.path.join(user_data_dir, "Default", "Sessions")):
         # first launch: blank tab instead of the new-tab page and its google fetches
         kw["url"] = "about:blank"
-    args = [executable] + build_args(user_data_dir, headless=headless, debug=debug, **kw)
-    log = open(os.path.join(user_data_dir, _LOG_FILE), "wb")
-    popen = {"stdout": log, "stderr": log, "stdin": subprocess.DEVNULL,
-             "env": {**os.environ, **(env or {})}}
+    vdisplay = None
+    if display == "virtual" and not headless:
+        from .display import SIZE, VirtualDisplay
+        vdisplay = VirtualDisplay(screen_size or SIZE).start()
+        kw["virtual"] = vdisplay.size
+    try:
+        args = [executable] + build_args(user_data_dir, headless=headless, debug=debug, **kw)
+        log = open(os.path.join(user_data_dir, _LOG_FILE), "wb")
+        popen = {"stdout": log, "stderr": log, "stdin": subprocess.DEVNULL,
+                 "env": {**os.environ, **(env or {})}}
+        if vdisplay:
+            popen["env"] = vdisplay.apply(popen["env"])
+        return _launch(user_data_dir, args, popen, log, headless=headless, debug=debug, browser=browser,
+                       executable=executable, tie_to_parent=tie_to_parent, timeout=timeout, kw=kw,
+                       vdisplay=vdisplay)
+    except BaseException:
+        if vdisplay:
+            vdisplay.stop()
+        raise
+
+
+def _launch(user_data_dir, args, popen, log, *, headless, debug, browser, executable, tie_to_parent,
+            timeout, kw, vdisplay):
     if sys.platform == "win32":
         popen["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         if not tie_to_parent:
@@ -480,17 +581,20 @@ def spawn(user_data_dir, *, browser="chromium", headless=False, debug=True, tie_
     log.close()
     with open(os.path.join(user_data_dir, _STATE_FILE), "w") as f:
         json.dump({"pid": proc.pid, "headless": headless, "browser": browser, "executable": executable,
-                   "debug": debug, "proxy": kw.get("proxy"), "started": time.time()}, f)
+                   "debug": debug, "proxy": kw.get("proxy"), "started": time.time(),
+                   "display": vdisplay.display if vdisplay else None,
+                   "xvfb_pid": vdisplay.pid if vdisplay else None}, f)
+    shown = {"display": vdisplay.display if vdisplay else None}
     if not debug:
         return {"pid": proc.pid, "port": None, "ws": None, "headless": headless,
-                "browser": browser, "agent_access": False, "process": proc}
+                "browser": browser, "agent_access": False, "process": proc, **shown}
     deadline = time.time() + timeout
     while time.time() < deadline:
         ep = read_endpoint(user_data_dir)
         if ep:
             _settle(ep[0])
             return {"pid": proc.pid, "port": ep[0], "ws": ep[1], "headless": headless,
-                    "browser": browser, "agent_access": True, "process": proc}
+                    "browser": browser, "agent_access": True, "process": proc, **shown}
         if proc.poll() is not None:
             other = status(user_data_dir)
             if other:
@@ -587,9 +691,11 @@ async def stop(user_data_dir, *, timeout=15.0):
         with contextlib.suppress(Exception):
             await cdp_call(st["ws"], "Browser.close")
         if await wait_closed(user_data_dir, st["pid"], timeout):
+            reap_display(user_data_dir)
             return True
     if st["pid"]:
         await _end(st["pid"])
+    reap_display(user_data_dir)
     return True
 
 

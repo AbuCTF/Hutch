@@ -168,7 +168,7 @@ def create_mcp_server():
                         },
                         "browser": {
                             "type": "string",
-                            "description": "chromium (default) | chrome | brave | edge | path (create only)",
+                            "description": "chrome (default, real Google Chrome) | chromium (bundled) | brave | edge | path (create only)",
                         },
                         "target": {
                             "type": "string",
@@ -209,6 +209,14 @@ def create_mcp_server():
                             "default": False,
                             "description": "Move, click, type and scroll with a person's timing "
                                            "instead of teleporting (create only)",
+                        },
+                        "display": {
+                            "type": "string",
+                            "enum": ["auto", "real", "virtual"],
+                            "default": "auto",
+                            "description": "Headed browsers only: real opens on the desktop, virtual runs on a "
+                                           "private 1920x1080 Xvfb screen no window manager can resize "
+                                           "(create only)",
                         },
                         "driver": {
                             "type": "string",
@@ -747,10 +755,11 @@ def create_mcp_server():
                     ignore_https_errors=arguments.get("ignore_https_errors", False),
                     tags=arguments.get("tags", {}),
                     caido=arguments.get("caido", False),
-                    browser=arguments.get("browser") or "chromium",
+                    browser=arguments.get("browser") or None,
                     block_private=arguments.get("block_private", False),
                     driver=arguments.get("driver") or "playwright",
                     humanize=arguments.get("humanize", False),
+                    display=arguments.get("display") or "auto",
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
 

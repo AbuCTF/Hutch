@@ -629,7 +629,8 @@ class HutchClient:
     async def create(self, name, *, program=None, preset=None, proxy=None,
                      headless=True, ignore_https_errors=False,
                      locale=None, timezone=None, tags=None, caido=False,
-                     browser="chromium", block_private=False, driver="playwright", humanize=False):
+                     browser=None, block_private=False, driver="playwright", humanize=False,
+                     display="auto"):
         result = await self._call("create", {
             "name": name, "program": program, "preset": preset,
             "proxy": proxy, "headless": headless,
@@ -641,6 +642,7 @@ class HutchClient:
             "block_private": block_private,
             "driver": driver,
             "humanize": humanize,
+            "display": display,
         })
         return SessionHandle(self, name)
 

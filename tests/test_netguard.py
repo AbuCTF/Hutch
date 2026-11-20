@@ -265,3 +265,65 @@ async def test_a_hung_dns_lookup_times_out_and_is_refused(monkeypatch):
     guard = netguard.PrivateNetworkGuard(resolver=lambda h, p: netguard._system_resolve(h, p, timeout=0.2))
     assert await guard.allowed("https://hang.test/") is False  # unresolvable means refused
     release.set()  # let the daemon threads finish
+
+
+# --- a failed lookup is a fault, not a verdict ---
+
+@pytest.mark.asyncio
+async def test_transient_dns_failure_is_retried():
+    calls = []
+
+    async def flaky(host, port):
+        calls.append(host)
+        if len(calls) < 3:
+            raise OSError("too many DNS lookups in flight")
+        return ["93.184.216.34"]
+
+    guard = PrivateNetworkGuard(resolver=flaky, retry_delay=0.01)
+    assert await guard.allowed("https://api.example.com/") is True
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_lookup_is_forgotten_quickly():
+    down = {"on": True}
+
+    async def resolve(host, port):
+        if down["on"]:
+            raise OSError("timed out")
+        return ["93.184.216.34"]
+
+    guard = PrivateNetworkGuard(resolver=resolve, neg_ttl=0.05, retries=2, retry_delay=0.01)
+    assert await guard.allowed("https://api.example.com/") is False
+    down["on"] = False
+    await asyncio.sleep(0.1)
+    assert await guard.allowed("https://api.example.com/") is True
+
+
+@pytest.mark.asyncio
+async def test_private_verdict_is_still_cached_for_the_full_ttl():
+    calls = []
+
+    async def resolve(host, port):
+        calls.append(host)
+        return ["10.0.0.5"]
+
+    guard = PrivateNetworkGuard(resolver=resolve, neg_ttl=0.01)
+    assert await guard.allowed("https://internal.example/") is False
+    await asyncio.sleep(0.05)
+    assert await guard.allowed("https://internal.example/") is False
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_share_one_lookup():
+    calls = []
+
+    async def slow(host, port):
+        calls.append(host)
+        await asyncio.sleep(0.05)
+        return ["93.184.216.34"]
+
+    guard = PrivateNetworkGuard(resolver=slow)
+    results = await asyncio.gather(*(guard.allowed("https://api.example.com/x") for _ in range(100)))
+    assert all(results) and len(calls) == 1

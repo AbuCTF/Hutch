@@ -353,12 +353,13 @@ class HutchDaemon:
             ignore_https_errors=params.get("ignore_https_errors", False),
             tags=params.get("tags", {}),
             caido=params.get("caido", False),
-            browser=params.get("browser", "chromium"),
+            browser=params.get("browser"),
             strict_proxy=params.get("strict_proxy", True),
             require_proxy=params.get("require_proxy", False),
             block_private=params.get("block_private", False),
             driver=params.get("driver") or "playwright",
             humanize=params.get("humanize", False),
+            display=params.get("display") or "auto",
         )
         self._get_health(name)
         return _session_info(s)
@@ -973,6 +974,7 @@ def _session_info(s):
         "block_private": s.block_private,
         "driver": s.driver,
         "humanize": s.humanize,
+        "display": s.display,
     }
 
 

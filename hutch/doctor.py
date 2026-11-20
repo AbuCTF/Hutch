@@ -84,9 +84,22 @@ def run(base_dir):
     for name in ("chrome", "brave", "edge"):
         try:
             path = browser.find_executable(name)
-            _line(_OK, name, path)
+            version = browser.browser_version(path)
+            _line(_OK, name, f"{path} {version or ''}".strip() + (" (default)" if name == browser.DEFAULT_BROWSER else ""))
         except browser.BrowserError:
-            _line("--", name, "not installed")
+            if name == browser.DEFAULT_BROWSER:
+                _line(_WARN, name, "not installed, the default browser. install google-chrome-stable, "
+                      "or pass --browser chromium")
+            else:
+                _line("--", name, "not installed")
+
+    if sys.platform.startswith("linux"):
+        from . import display
+        xvfb = display.find_xvfb()
+        if xvfb:
+            _line(_OK, "xvfb", xvfb)
+        else:
+            _line("--", "xvfb", f"not installed, needed for --display virtual. {display.INSTALL}")
 
     for name in ("chrome", "brave", "edge"):
         try:
