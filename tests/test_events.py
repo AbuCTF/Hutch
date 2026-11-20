@@ -83,9 +83,9 @@ async def test_agent_dialogs_answered_by_default_plan_and_policy(base, site):
         s.arm_dialog(accept=True)
         await page.click("#confirm")
         assert await page.title() == "true"
-        s.arm_dialog(accept=True, text="abu")
+        s.arm_dialog(accept=True, text="alice")
         await page.click("#prompt")
-        assert await page.title() == "abu"
+        assert await page.title() == "alice"
         s.handle_dialog("accept")
         await page.click("#confirm")
         assert await page.title() == "true"

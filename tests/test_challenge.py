@@ -54,7 +54,7 @@ async def test_checkbox_is_clicked_once_and_passes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_forbidden_program_is_never_clicked(monkeypatch):
+async def test_forbidden_site_is_never_clicked(monkeypatch):
     s = Script(monkeypatch, shown=[widget()])
     out = await challenge.clear(challenge.Surface(), timeout=5, forbids_bypass=True)
     assert out["status"] == "hitl" and out["reason"] == "forbids_bypass" and s.clicks == []

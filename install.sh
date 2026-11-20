@@ -28,12 +28,21 @@ main() {
     ln -sf "$venv/bin/hutch" "$bin/hutch"
     ln -sf "$venv/bin/hutch-mcp" "$bin/hutch-mcp"
 
-    say "installing chromium"
-    "$venv/bin/python" -m playwright install chromium --no-shell
+    chrome=$("$venv/bin/python" -c 'from hutch.browser import find_executable
+try: print(find_executable("chrome"))
+except Exception: pass' 2>/dev/null || true)
+    if [ -n "$chrome" ]; then
+        say "using Google Chrome at $chrome"
+        exe="$chrome"
+    else
+        say "Google Chrome not found (hutch's default browser); fetching playwright's chromium as a fallback"
+        echo "  install google-chrome-stable for the best results, or pass --browser chromium"
+        "$venv/bin/python" -m playwright install chromium --no-shell
+        exe=$("$venv/bin/python" -c 'from hutch.browser import find_executable; print(find_executable("chromium"))')
+    fi
 
     say "checking system libraries"
     if [ "$(uname)" = "Linux" ]; then
-        exe=$("$venv/bin/python" -c 'from hutch.browser import find_executable; print(find_executable("chromium"))')
         if ldd "$exe" 2>/dev/null | grep -q "not found"; then
             if command -v apt-get >/dev/null; then
                 if [ "$(id -u)" -eq 0 ]; then
@@ -42,11 +51,12 @@ main() {
                     sudo "$venv/bin/playwright" install-deps chromium </dev/tty
                 fi
             else
-                echo "  chromium is missing libraries, hutch doctor lists them"
+                echo "  the browser is missing libraries, hutch doctor lists them"
             fi
         else
             echo "  ok"
         fi
+        command -v Xvfb >/dev/null || echo "  optional: Xvfb for --display virtual (pacman -S xorg-server-xvfb | apt install xvfb | dnf install xorg-x11-server-Xvfb)"
     fi
 
     echo
@@ -56,7 +66,7 @@ main() {
         *":$bin:"*) ;;
         *) printf '\nadd %s to PATH:\n  echo '\''export PATH="%s:$PATH"'\'' >> ~/.bashrc && exec bash\n' "$bin" "$bin" ;;
     esac
-    printf '\nnext: hutch login google\n'
+    printf '\nnext: hutch create hello --url https://example.com\n'
 }
 
 main "$@"

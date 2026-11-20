@@ -90,7 +90,7 @@ def generate(*, preset=None, seed=None, locale=None, timezone=None,
     sw, sh = p["screen"]
 
     # Use the chosen preset's locale/timezone by default — a US-Windows UA with a random
-    # it-IT locale (the old behavior for program-seeded fingerprints) is internally
+    # it-IT locale (the old behavior for name-seeded fingerprints) is internally
     # inconsistent and detectable. Only override when the caller explicitly asks.
     return Fingerprint(
         viewport_width=vw,

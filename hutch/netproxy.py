@@ -11,7 +11,7 @@ checked. That closes what request routing alone leaves open:
 - WebSockets under the patchright driver, which has no WebSocket routing.
 
 An operator can also give it a deny check (``Session.deny_hosts``): hosts that must never be
-contacted at all, such as a bug-bounty program's targets from a research tool. Those are refused
+contacted at all, such as sites a research tool must stay away from. Those are refused
 here too, before any lookup, for every request the browser makes.
 
 HTTPS and WebSockets arrive as CONNECT tunnels; the proxy never sees inside them. Plain HTTP

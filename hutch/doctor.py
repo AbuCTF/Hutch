@@ -51,8 +51,12 @@ def run(base_dir):
     try:
         exe = browser.find_executable("chromium")
     except browser.BrowserError as e:
-        _line(_FAIL, "chromium", str(e))
-        failed = True
+        try:
+            browser.find_executable("chrome")
+            _line("--", "chromium", "bundled build not installed, only needed for --browser chromium")
+        except browser.BrowserError:
+            _line(_FAIL, "chromium", f"{e}; or install google-chrome-stable, the default browser")
+            failed = True
     if exe:
         version = browser.browser_version(exe)
         if version:

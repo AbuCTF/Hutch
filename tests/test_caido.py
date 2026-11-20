@@ -9,15 +9,15 @@ from hutch.caido import CaidoClient, CaidoConfig, CaidoError
 
 
 _MOCK_PROJECTS = [
-    {"id": "p1", "name": "hunt-yandex", "status": "READY",
+    {"id": "p1", "name": "demo-project", "status": "READY",
      "path": "/tmp/p1", "size": 1024, "version": "1"},
 ]
 _MOCK_SCOPES = [
-    {"id": "s1", "name": "yandex", "allowlist": ["*.yandex.ru"],
+    {"id": "s1", "name": "example", "allowlist": ["*.example.com"],
      "denylist": []},
 ]
 _MOCK_REQUESTS = [
-    {"id": "r1", "method": "GET", "host": "yandex.ru", "port": 443,
+    {"id": "r1", "method": "GET", "host": "example.com", "port": 443,
      "path": "/api/v1/user", "query": "", "isTls": True, "length": 200,
      "createdAt": "2026-09-01T00:00:00Z",
      "response": {"id": "rsp1", "statusCode": 200, "length": 500,
@@ -26,7 +26,7 @@ _MOCK_REQUESTS = [
 _MOCK_FINDINGS = [
     {"id": "f1", "title": "IDOR", "description": "user data leak",
      "reporter": "hutch", "request": {"id": "r1", "method": "GET",
-     "host": "yandex.ru", "path": "/api/v1/user"},
+     "host": "example.com", "path": "/api/v1/user"},
      "createdAt": "2026-09-01T00:00:00Z"},
 ]
 
@@ -83,7 +83,7 @@ async def _mock_graphql(request):
     if "isInScope" in query:
         url = variables.get("url", "")
         return web.json_response({"data": {
-            "isInScope": "yandex" in url}})
+            "isInScope": "example" in url}})
 
     if "requests" in query.lower() and "mutation" not in query.lower():
         return web.json_response({"data": {"requests": {
@@ -171,7 +171,7 @@ async def _mock_graphql(request):
 
     if "sitemap" in query.lower():
         return web.json_response({"data": {"sitemap": [
-            {"id": "sm1", "label": "yandex.ru", "kind": "DOMAIN",
+            {"id": "sm1", "label": "example.com", "kind": "DOMAIN",
              "children": [{"id": "sm2", "label": "/api", "kind": "PATH"}]}
         ]}})
 
@@ -216,7 +216,7 @@ class TestProjects:
     async def test_list_projects(self, mock_caido):
         projects = await mock_caido.list_projects()
         assert len(projects) == 1
-        assert projects[0]["name"] == "hunt-yandex"
+        assert projects[0]["name"] == "demo-project"
 
     @pytest.mark.asyncio
     async def test_create_project(self, mock_caido):
@@ -240,8 +240,8 @@ class TestProjects:
 
     @pytest.mark.asyncio
     async def test_ensure_project_existing(self, mock_caido):
-        p = await mock_caido.ensure_project("hunt-yandex")
-        assert p["name"] == "hunt-yandex"
+        p = await mock_caido.ensure_project("demo-project")
+        assert p["name"] == "demo-project"
 
     @pytest.mark.asyncio
     async def test_ensure_project_new(self, mock_caido):
@@ -255,7 +255,7 @@ class TestScopes:
     async def test_list_scopes(self, mock_caido):
         scopes = await mock_caido.list_scopes()
         assert len(scopes) == 1
-        assert scopes[0]["name"] == "yandex"
+        assert scopes[0]["name"] == "example"
 
     @pytest.mark.asyncio
     async def test_create_scope(self, mock_caido):
@@ -265,13 +265,13 @@ class TestScopes:
 
     @pytest.mark.asyncio
     async def test_is_in_scope(self, mock_caido):
-        assert await mock_caido.is_in_scope("https://yandex.ru/api")
+        assert await mock_caido.is_in_scope("https://example.com/api")
         assert not await mock_caido.is_in_scope("https://google.com")
 
     @pytest.mark.asyncio
     async def test_ensure_scope_existing(self, mock_caido):
-        s = await mock_caido.ensure_scope("yandex", ["*.yandex.ru"])
-        assert s["name"] == "yandex"
+        s = await mock_caido.ensure_scope("example", ["*.example.com"])
+        assert s["name"] == "example"
 
     @pytest.mark.asyncio
     async def test_ensure_scope_new(self, mock_caido):
@@ -285,7 +285,7 @@ class TestRequests:
     async def test_list_requests(self, mock_caido):
         result = await mock_caido.list_requests()
         assert len(result["items"]) == 1
-        assert result["items"][0]["host"] == "yandex.ru"
+        assert result["items"][0]["host"] == "example.com"
         assert result["has_more"] is False
 
     @pytest.mark.asyncio
@@ -387,7 +387,7 @@ class TestSitemap:
     async def test_get_sitemap(self, mock_caido):
         sitemap = await mock_caido.get_sitemap()
         assert len(sitemap) >= 1
-        assert sitemap[0]["label"] == "yandex.ru"
+        assert sitemap[0]["label"] == "example.com"
 
 
 class TestErrorHandling:

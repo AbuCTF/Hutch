@@ -86,7 +86,7 @@ def test_vault_file_resolve_domains_and_redaction(vault):
 
 @pytest.mark.asyncio
 async def test_agents_type_secrets_but_never_see_them(base, site, tmp_path):
-    secrets.set_secret("email", "abu@corp.test", ["127.0.0.1"])
+    secrets.set_secret("email", "alice@corp.test", ["127.0.0.1"])
     secrets.set_secret("elsewhere", "nope-value", ["example.com"])
     sock = str(tmp_path / "d.sock")
     d = HutchDaemon(base_dir=base, idle_timeout=0, sock_path=sock)
@@ -97,7 +97,7 @@ async def test_agents_type_secrets_but_never_see_them(base, site, tmp_path):
         s = await c.create("vault", headless=True)
         await s.goto(site)
         state = await s.fill("input[name=email]", "{{email}}")
-        assert "abu@corp.test" not in json.dumps(state) and "{{email}}" in state["changes"]
+        assert "alice@corp.test" not in json.dumps(state) and "{{email}}" in state["changes"]
         assert await s.evaluate("document.querySelector('[name=email]').value") == "{{email}}"
         with pytest.raises(Exception, match="not allowed on 127.0.0.1"):
             await s.fill("input[name=pw]", "{{elsewhere}}")
@@ -115,7 +115,7 @@ async def test_record_replay_and_export(base, site):
         await s.goto(site)
         await s.start_recording()
         page = s._active_page()
-        await page.fill("input[name=email]", "abu@corp.test")
+        await page.fill("input[name=email]", "alice@corp.test")
         await page.fill("input[name=pw]", "s3cret-pass")
         await page.check("input[name=remember]")
         await page.select_option("select", "pro")
@@ -123,7 +123,7 @@ async def test_record_replay_and_export(base, site):
         await page.wait_for_url("**/home**")
         rec = s.stop_recording()
         actions = [(st["action"], st.get("value")) for st in rec["steps"]]
-        assert actions == [("fill", "abu@corp.test"), ("fill", "{{pw}}"), ("check", None),
+        assert actions == [("fill", "alice@corp.test"), ("fill", "{{pw}}"), ("check", None),
                            ("select", "pro"), ("click", None), ("wait_url", None)]
         assert rec["start"] == site + "/"
         assert all("t" not in st for st in rec["steps"])
@@ -132,7 +132,7 @@ async def test_record_replay_and_export(base, site):
         result = await s.replay(rec)
         assert result["ok"], result
         got = json.loads(await s.inner_text("#got"))
-        assert got == {"email": "abu@corp.test", "pw": "s3cret-pass", "remember": "on", "plan": "pro"}
+        assert got == {"email": "alice@corp.test", "pw": "s3cret-pass", "remember": "on", "plan": "pro"}
 
         secrets.remove("pw")
         failed = await s.replay(rec)
@@ -170,15 +170,15 @@ def test_cli_secret_commands(tmp_path):
 
 
 def test_totp_secret_matches_rfc6238_and_resolves_to_the_current_code():
-    secrets.set_totp("ywh", "otpauth://totp/YesWeHack:abu?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8",
-                     ["yeswehack.com"])
-    entry = json.load(open(secrets.path()))["ywh"]
-    assert entry["kind"] == "totp" and entry["label"] == "YesWeHack:abu"
+    secrets.set_totp("site", "otpauth://totp/Example:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8",
+                     ["example.com"])
+    entry = json.load(open(secrets.path()))["site"]
+    assert entry["kind"] == "totp" and entry["label"] == "Example:alice"
     assert secrets.totp(entry, 59) == "94287082" and secrets.totp(entry, 1111111109) == "07081804"
-    code, left = secrets.code("ywh")
+    code, left = secrets.code("site")
     assert len(code) == 8 and 0 < left <= 30
-    assert secrets.resolve("{{ywh}}", "https://yeswehack.com/auth") in (code, secrets.totp(entry, time.time() + 30))
-    assert secrets.placeholder_for(code) == "{{ywh}}"
+    assert secrets.resolve("{{site}}", "https://example.com/auth") in (code, secrets.totp(entry, time.time() + 30))
+    assert secrets.placeholder_for(code) == "{{site}}"
     assert secrets.listing()[0]["kind"] == "totp"
     with pytest.raises(secrets.SecretError, match="base32"):
         secrets.set_totp("bad", "not base32!")
@@ -232,7 +232,7 @@ async def test_recorded_otp_login_replays_with_a_fresh_code(base, tmp_path):
 
 
 class _TwoStep(http.server.BaseHTTPRequestHandler):
-    """Password page, then a code page under /auth/totp/, then the dashboard: the YesWeHack shape."""
+    """Password page, then a code page under /auth/totp/, then the dashboard: a common two-step shape."""
     def log_message(self, *a):
         pass
 
@@ -254,16 +254,16 @@ class _TwoStep(http.server.BaseHTTPRequestHandler):
             return self._page(b"<form method=post action=/auth/totp/check><input autocomplete=one-time-code name=c>"
                               b"<button type=submit>Verify</button></form>")
         if "sid=ok" in self.headers.get("Cookie", ""):
-            return self._page(b"<h1>Welcome hunter</h1>")
+            return self._page(b"<h1>Welcome alice</h1>")
         return self._page(b"", location="/auth/login")
 
     def do_POST(self):
         body = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
         if self.path == "/auth/login":
-            ok = body.get("email") == ["me@hunter.test"] and body.get("password") == ["pw-1234"]
+            ok = body.get("email") == ["me@example.test"] and body.get("password") == ["pw-1234"]
             return self._page(b"", location="/auth/totp/abc" if ok else "/auth/login?bad")
         code = body.get("c", [""])[0]
-        entry = json.load(open(secrets.path()))["ywh-otp"]
+        entry = json.load(open(secrets.path()))["site-otp"]
         if code in (secrets.totp(entry), secrets.totp(entry, time.time() - 30)):
             return self._page(b"", cookie="sid=ok; Path=/", location="/")
         return self._page(b"invalid code")
@@ -272,27 +272,27 @@ class _TwoStep(http.server.BaseHTTPRequestHandler):
 @pytest.mark.asyncio
 async def test_imported_platform_creds_log_in_through_a_code_page(base, tmp_path):
     platforms = tmp_path / "platforms.json"
-    platforms.write_text(json.dumps({"yeswehack": {"username": "me@hunter.test", "password": "pw-1234",
+    platforms.write_text(json.dumps({"example": {"username": "me@example.test", "password": "pw-1234",
                                                    "totp_seed": "JBSWY3DPEHPK3PXP"}}))
-    stored = secrets.import_json(str(platforms), {"username": "ywh-email", "password": "ywh-pass",
-                                                  "totp_seed": "ywh-otp:totp"}, key="yeswehack",
+    stored = secrets.import_json(str(platforms), {"username": "site-email", "password": "site-pass",
+                                                  "totp_seed": "site-otp:totp"}, key="example",
                                  domains=["127.0.0.1"])
-    assert stored == ["ywh-email", "ywh-pass", "ywh-otp"] and secrets.code("ywh-otp")
+    assert stored == ["site-email", "site-pass", "site-otp"] and secrets.code("site-otp")
     with pytest.raises(secrets.SecretError, match="'handle' is missing"):
-        secrets.import_json(str(platforms), {"handle": "x"}, key="yeswehack")
+        secrets.import_json(str(platforms), {"handle": "x"}, key="example")
 
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _TwoStep)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     site = f"http://127.0.0.1:{httpd.server_address[1]}"
-    recipe = json.load(open(os.path.join(os.path.dirname(__file__), "..", "examples", "yeswehack-login.json")))
+    recipe = json.load(open(os.path.join(os.path.dirname(__file__), "..", "examples", "login-totp.json")))
     recipe["start"] = f"{site}/auth/login"
     try:
         async with Pool(base_dir=base) as pool:
-            s = await pool.create("ywh", headless=True)
+            s = await pool.create("site", headless=True)
             await s.goto(site + "/")
             result = await s.replay(recipe)
             assert result["ok"], result
-            assert "/auth/" not in s._active_page().url and await s.inner_text("h1") == "Welcome hunter"
+            assert "/auth/" not in s._active_page().url and await s.inner_text("h1") == "Welcome alice"
             s.set_auth(site + "/", expect="Welcome")
             assert (await s.auth_check())["state"] == "in"
     finally:

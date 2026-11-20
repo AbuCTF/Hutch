@@ -1,14 +1,17 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hutch"
-version = "0.31.0"
-description = "isolated playwright session orchestrator"
+version = "0.31.1"
+description = "stealth browser orchestrator on real Chrome: persistent sessions, Cloudflare challenge clearing, MCP, CLI and Python API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Abdur Rahman" }]
+keywords = ["browser", "playwright", "patchright", "chrome", "stealth", "cloudflare", "turnstile", "mcp", "automation"]
 dependencies = [
     "playwright>=1.40",
     "aiohttp>=3.9",
@@ -20,6 +23,10 @@ mcp = ["mcp>=1.0,<2"]
 dev = ["pytest>=7.0", "pytest-asyncio>=1.0"]
 patchright = ["patchright>=1.55"]
 all = ["hutch[stealth,mcp,patchright]"]
+
+[project.urls]
+Homepage = "https://hutch.abu.rocks"
+Repository = "https://github.com/AbuCTF/Hutch"
 
 [project.scripts]
 hutch = "hutch.cli:main"

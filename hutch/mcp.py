@@ -184,7 +184,7 @@ def create_mcp_server():
                         },
                         "program": {
                             "type": "string",
-                            "description": "Program name for deterministic fingerprint (create only)",
+                            "description": "Name that seeds a deterministic fingerprint (create only)",
                         },
                         "locale": {"type": "string", "description": "Locale override (create only)"},
                         "timezone": {"type": "string", "description": "Timezone override (create only)"},

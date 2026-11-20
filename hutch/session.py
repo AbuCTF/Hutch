@@ -2731,12 +2731,12 @@ class Session:
     async def clear_challenge(self, *, timeout=60.0, forbids_bypass=None):
         """Click the "verify you are human" checkbox on the active tab the way a person would.
 
-        For test accounts a program's rules allow us to make. Handles a Cloudflare Turnstile checkbox
+        For accounts a site's rules let you create. Handles a Cloudflare Turnstile checkbox
         (managed, or the full-page check) and a reCAPTCHA v2 box; waits for the widget to settle and
         returns {"status": "clear" | "passed" | "grid-required" | "hitl" | "timeout", "kind", "seconds",
         "clicks"}. An image grid is not attempted: the status is "grid-required" and the page is left
         as it is. With the ``forbids_bypass`` tag on the session (or ``forbids_bypass=True``) nothing is
-        clicked and the status is "hitl", for a program that does not allow bypassing its checks.
+        clicked and the status is "hitl", for a site that does not allow bypassing its checks.
         """
         self._require_active()
         page = self._active_page()
@@ -2763,7 +2763,7 @@ class Session:
 
         The session pauses, so agent actions raise until it carries on. Hutch saves a screenshot,
         notes the request in the profile (``hutch ps`` shows it), and emits a ``handoff`` event.
-        on_pause callbacks fire, so a harness can send its alert from there.
+        on_pause callbacks fire, so a caller can send its own alert from there.
 
         It returns when one of these happens:
         - someone calls ``resume()`` here, over the daemon, or with ``hutch resume NAME`` from
@@ -2948,8 +2948,8 @@ class Session:
     def deny_hosts(self, check):
         """Never contact hosts for which ``check(host)`` is true, from any tab, worker or socket.
 
-        For callers with hosts that are off limits, such as a research tool next to a bug-bounty
-        program. Checked by the request guard and, for sessions with the private-network block, by
+        For callers with hosts that are off limits, such as a crawler that must never touch
+        certain sites. Checked by the request guard and, for sessions with the private-network block, by
         the proxy where connections are made, so service-worker requests and WebSockets are
         covered as well. Runtime only: the check is code, so it is not saved with the profile.
         Pass None to clear it.

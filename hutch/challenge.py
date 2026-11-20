@@ -1,9 +1,9 @@
 """Clearing "verify you are human" checkboxes, driver-agnostic.
 
-For the test accounts a program's own rules allow us to create: when a sign-up or login page shows a
+For the accounts a site's own rules let you create: when a sign-up or login page shows a
 Cloudflare Turnstile checkbox or a reCAPTCHA v2 "I'm not a robot" box, click it the way a person does
 and wait for the answer. Image grids are not attempted; the session is marked ``grid-required`` and
-left for a solver or a person. A program that forbids bypassing its checks is never touched
+left for a solver or a person. A site that forbids bypassing its checks is never touched
 (``forbids_bypass=True`` returns ``hitl`` and does nothing).
 
 How a click is made to pass, from what the widgets are documented and observed to look at:
@@ -405,7 +405,7 @@ async def clear(surf, *, timeout=60.0, forbids_bypass=False, settle=4.0, rng=Non
     ``clear``       no challenge was ever shown
     ``passed``      a token or a normal page was left behind (``clicked`` says whether a click did it)
     ``grid-required``  an image challenge opened; nothing was guessed
-    ``hitl``        the program forbids bypassing checks; the page was not touched
+    ``hitl``        the session is tagged as forbidding bypass; the page was not touched
     ``timeout``     the widget never settled
     """
     started = time.monotonic()

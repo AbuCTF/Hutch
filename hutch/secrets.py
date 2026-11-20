@@ -109,7 +109,7 @@ def _value(entry):
 def import_json(path, mapping, *, key=None, domains=None):
     """Copy values from a JSON credentials file into the vault without anyone seeing them.
 
-    mapping: {"field": "name"} or {"field": "name:totp"}; key picks a nested object (e.g. "yeswehack").
+    mapping: {"field": "name"} or {"field": "name:totp"}; key picks a nested object (e.g. "example").
     Returns the names stored.
     """
     with open(path) as f:

@@ -1,60 +1,131 @@
-isolated playwright session orchestrator.
+# Hutch
 
-every session is a real browser on its own profile. you browse it, an agent attaches to it,
-either of you can move it on or off screen, and closing the window frees everything while
-logins stay on disk. per-session proxy, optional personas, daemon + MCP for agents.
+A stealth browser orchestrator built on real Google Chrome. Hutch launches and manages persistent
+browser sessions, clears Cloudflare's silent challenges and interactive checkboxes (Turnstile,
+reCAPTCHA v2), and exposes them through an MCP server, a CLI, a daemon and a Python API.
+It works with Playwright or Patchright, and is meant to be used by people and by AI agents
+at the same time.
 
-### Architecture
-
-![architecture](docs/architecture.png)
+- **Real Chrome, not Chrome for Testing.** The installed Google Chrome is the default. Hutch never
+  uses Playwright's bundled build unless you ask for it, and never launches on your everyday profile.
+- **Batteries included.** Profiles and logins that persist, per-session proxies, headed/headless
+  switching without losing tabs, a virtual display, humanized input, secrets an agent can type but never read,
+  record and replay, multi-account replay, and a hand-off to a person when a check needs one.
+- **Driver-agnostic.** `playwright` by default, `patchright` for no `Runtime.enable` traces. Same API.
+- **Guarded.** Image grids are never guessed, `forbids_bypass` sessions are never clicked, secrets are bound
+  to domains and redacted from output, and a private-network block and a deny-list keep sessions off hosts you name.
 
 ### Install
+
+Requires Python 3.10+ and Google Chrome (Linux, macOS or Windows).
+
+```bash
+uv tool install "hutch[mcp] @ git+https://github.com/AbuCTF/Hutch"
+hutch doctor        # checks Chrome, fonts, display, Xvfb and attachable browsers
+```
+
+Or the install script, which uses a private venv in `~/.hutch/venv` and links `hutch` and `hutch-mcp`
+into `~/.local/bin`:
 
 ```bash
 curl -fsSL hutch.abu.rocks | sh
 ```
 
-installs into `~/.hutch/venv`, links `hutch` and `hutch-mcp` into `~/.local/bin`, fetches
-chromium, asks for sudo only if chromium's system libraries are missing, then runs
-`hutch doctor`. re-run to update; `HUTCH_REF=<tag or commit>` pins a version. uninstall with
-`rm -rf ~/.hutch/venv ~/.local/bin/hutch ~/.local/bin/hutch-mcp` (profiles in
-`~/.hutch/profiles` are kept).
+It uses your Google Chrome when it finds one and otherwise fetches Playwright's chromium as a fallback,
+asks for sudo only if the browser's system libraries are missing, then runs `hutch doctor`. Re-run to
+update; `HUTCH_REF=<tag or commit>` pins a version. Uninstall with
+`rm -rf ~/.hutch/venv ~/.local/bin/hutch ~/.local/bin/hutch-mcp` (profiles in `~/.hutch/profiles` are kept).
 
-on native Windows (PowerShell, Python 3.10+):
+Optional extras: `hutch[patchright]` for the stealth driver, `hutch[stealth]` for persona patches.
+
+**Virtual display (Linux).** `--display virtual` runs headed Chrome on a private 1920x1080 Xvfb screen,
+which tiling window managers cannot resize and where `clear_challenge` clicks through the X server.
+It needs Xvfb:
+
+```bash
+sudo pacman -S xorg-server-xvfb     # Arch
+sudo apt install xvfb               # Debian, Ubuntu
+sudo dnf install xorg-x11-server-Xvfb   # Fedora
+```
+
+On native Windows (PowerShell):
 
 ```powershell
 pip install "hutch[mcp] @ https://github.com/AbuCTF/Hutch/archive/master.tar.gz"
-playwright install chromium --no-shell
 hutch doctor
 ```
 
-the daemon listens on loopback TCP with a token in `~/.hutch/hutch.endpoint` instead of a unix
+The daemon listens on loopback TCP with a token in `~/.hutch/hutch.endpoint` instead of a unix
 socket, and an agent's headless browser is tied to it with a job object. `--browser edge` works
-without the chromium download; headless edge never exits on its own, so hutch ends it once it has
-written its session.
+without Chrome; headless edge never exits on its own, so hutch ends it once it has written its session.
 
-from a checkout, for development:
+From a checkout, for development: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Hello world
 
 ```bash
-git clone https://github.com/AbuCTF/Hutch.git && cd Hutch
-./setup.sh
+hutch create hello --url https://example.com    # a persistent session, headless
+hutch screenshot hello hello.png
+hutch call hello clear_challenge                # no challenge here: {"status": "clear"}
+hutch destroy hello                             # stop it and delete its profile
 ```
 
-### Quick start
+The same in Python (`examples/hello.py`):
+
+```python
+import asyncio
+from hutch import Pool
+
+async def main():
+    async with Pool() as pool:
+        s = await pool.create("hello", headless=True)
+        await s.goto("https://example.com")
+        print((await s.page_state())["title"])        # Example Domain
+        await s.screenshot(path="hello.png")
+        await pool.destroy("hello")
+
+asyncio.run(main())
+```
+
+### Clearing a challenge
+
+```python
+result = await s.clear_challenge(timeout=60)
+# {"status": "passed", "kind": "turnstile", "seconds": 21.4, "clicks": 1, "clicked": True}
+```
+
+`clear_challenge` clicks a Cloudflare Turnstile or reCAPTCHA v2 checkbox the way a person does, once per
+appearance, and waits for the answer. `status` is one of `clear` (nothing was shown), `passed`,
+`grid-required` (an image grid opened; nothing is guessed, hand it to a person with `await_human`),
+`hitl` (the session is tagged `forbids_bypass`, nothing was touched) or `timeout`. Cloudflare's
+silent checks pass without a click when the browser is real and nothing scripts the page while the check
+is up; for those, wait for the page.
+For the best results use real Chrome, `driver="patchright"`, headed on `display="virtual"`
+(`examples/clear_challenge.py`). Details and measurements are under [Stealth](#stealth).
+
+Use it on sites and accounts you are allowed to use it on. See the note under [License](#license).
+
+### MCP
+
+```bash
+claude mcp add -s user hutch -- hutch-mcp      # Claude Code; any MCP client runs hutch-mcp over stdio
+```
+
+### Everyday use
 
 #### Browser
 
 ```bash
 hutch login google                     # plain window, sign in to your Google accounts, close it
-hutch clone google bb-acme             # new profile that already has those accounts
-hutch browse bb-acme https://acme.com --caido   # persistent window through Caido
-hutch tabs bb-acme                     # what is open
-hutch view bb-acme                     # watch and drive it from a web page, no relaunch
-hutch headless bb-acme                 # off screen, tabs + session restored (~1.5s)
-hutch headed bb-acme                   # back on screen
+hutch clone google acme             # new profile that already has those accounts
+hutch browse acme https://acme.com --caido   # persistent window through a Caido proxy
+hutch tabs acme                     # what is open
+hutch view acme                     # watch and drive it from a web page, no relaunch
+hutch headless acme                 # off screen, tabs + session restored (~1.5s)
+hutch headed acme                   # back on screen
 hutch ps                               # running browsers and their memory
-hutch stop bb-acme                     # or just close the window
-hutch profile export bb-acme acme.tar.gz   # the profile and its logins, to carry elsewhere
+hutch stop acme                     # or just close the window
+hutch profile export acme acme.tar.gz   # the profile and its logins, to carry elsewhere
 hutch profile import acme.tar.gz           # back as a session (give a name to rename it)
 hutch doctor                           # libraries, fonts, display, attachable browsers
 hutch gc --dry-run --caches            # what old artifacts, downloads and caches would free
@@ -80,10 +151,6 @@ hutch gc --dry-run --caches            # what old artifacts, downloads and cache
 
 #### Agents
 
-```bash
-claude mcp add -s user hutch -- hutch-mcp      # Claude Code; any MCP client runs hutch-mcp over stdio
-```
-
 `hutch_sessions` lists, creates and attaches sessions; `action: "view"` returns a live view URL
 for the human. `hutch_observe` returns an accessibility snapshot whose `[ref=e12]` refs every
 action accepts as a selector; `filter: "interactive"` keeps only what can be acted on and `diff`
@@ -96,9 +163,9 @@ MCP `hutch_call` and the CLI dispatch through one registry read from `Session` i
 
 ```bash
 hutch call help                                  # every command with its signature
-hutch call bb-acme click e12
-hutch call bb-acme evaluate "document.cookie"
-hutch call bb-acme set_cookies cookies:='[{"name": "a", "value": "1", "url": "https://acme.com"}]'
+hutch call acme click e12
+hutch call acme evaluate "document.cookie"
+hutch call acme set_cookies cookies:='[{"name": "a", "value": "1", "url": "https://acme.com"}]'
 ```
 
 #### Several accounts
@@ -134,14 +201,14 @@ hutch auth acme-alice --find                        # pick a probe from captured
 
 ```bash
 hutch secret set acme-pass --domain acme.com     # prompted, stored 0600 in ~/.hutch/secrets.json
-hutch call bb-acme fill "#password" "{{acme-pass}}"
-hutch secret set ywh-otp --totp --domain yeswehack.com   # otpauth:// uri or base32 from the 2FA setup
-hutch secret code ywh-otp                        # current code; agents type {{ywh-otp}}
-hutch secret import ~/.secrets/platforms.json --key yeswehack --domain yeswehack.com \
-  --map username=ywh-email --map password=ywh-pass --map totp_seed=ywh-otp:totp   # nothing is printed
-hutch replay ywh examples/yeswehack-login.json  # password page, waits for the code page, types a fresh code
-hutch record bb-acme -o login.json               # do it in the window, Ctrl+C to stop
-hutch replay bb-acme login.json
+hutch call acme fill "#password" "{{acme-pass}}"
+hutch secret set acme-otp --totp --domain acme.com   # otpauth:// uri or base32 from the 2FA setup
+hutch secret code acme-otp                       # current code; agents type {{acme-otp}}
+hutch secret import creds.json --key acme --domain acme.com \
+  --map username=acme-email --map password=acme-pass --map totp_seed=acme-otp:totp   # nothing is printed
+hutch replay acme examples/login-totp.json      # password page, waits for the code page, types a fresh code
+hutch record acme -o login.json               # do it in the window, Ctrl+C to stop
+hutch replay acme login.json
 hutch export login.json > login.py               # standalone playwright, secrets from HUTCH_SECRET_<NAME>
 ```
 
@@ -153,7 +220,9 @@ hutch export login.json > login.py               # standalone playwright, secret
   passwords become `{{password}}` (or the vault name) and are scrubbed from recorded URLs
 - recordings can wait for an element (`{"action": "wait", "selector": ...}`) or for the url to leave a
   path (`{"action": "wait_url", "not": "/auth/"}`), which is what two-step logins need
-- screenshots are not redacted: a secret typed into a visible plain-text field shows in pixels Dialogs, downloads, file choosers, popups and crashes land in a
+- screenshots are not redacted: a secret typed into a visible plain-text field shows in pixels.
+
+Dialogs, downloads, file choosers, popups and crashes land in a
 per-session event log; new events are appended to every tool result, and `hutch_events` waits for
 them, answers the next dialog or sets files on an open chooser. Agent tabs accept alerts and
 dismiss confirm/prompt unless told otherwise; dialogs on the human's tabs are left to the human.
@@ -170,13 +239,13 @@ result = await s.await_human("captcha on signup", until="challenge", timeout=600
 ```
 
 ```bash
-hutch view bb-acme       # headless? see and drive it from a web page
+hutch view acme       # headless? see and drive it from a web page
 hutch ps                 # lists sessions waiting for a person and why
-hutch resume bb-acme     # done: from any shell, the waiting session carries on
+hutch resume acme     # done: from any shell, the waiting session carries on
 ```
 
 - the session pauses (agent actions raise until it carries on), saves a screenshot and emits a
-  `handoff` event; `on_pause` callbacks fire, which is where a harness sends its alert
+  `handoff` event; `on_pause` callbacks fire, which is where you send your own alert
 - it returns on `hutch resume`, `resume()` (daemon or python), the `until` condition, or the
   timeout, and the session is active again in every case; `outcome` says which:
   `resumed`, `cleared`, `timeout` or `closed`
@@ -230,7 +299,7 @@ hutch serve --exit-when-idle
 #### Direct Client
 
 ```python
-from hutch import Pool, generate, generate_for_program
+from hutch import Pool, generate
 
 async with Pool() as pool:
     s = await pool.create(
@@ -344,7 +413,7 @@ async with HutchClient() as client:
 
 ### Fingerprint presets (personas)
 
-Only applied when asked for (`--preset`, `--program`). Without one, sessions use the browser's
+Only applied when asked for (`--preset`, `--program NAME` for a persona seeded from a name). Without one, sessions use the browser's
 real identity — spoofing a Windows UA on a Linux engine is easier to detect than not spoofing.
 
 
@@ -367,7 +436,7 @@ from automation itself, and three opt-ins remove them:
   browser without `Runtime.enable` and `Console.enable`, the CDP calls detectors probe for, and runs
   Hutch's own scripts in an isolated world. Costs: no console messages in `observe`, and
   `evaluate` reaches page globals only because Hutch asks for the main world explicitly.
-- **Google Chrome instead of the bundled Chromium** (`--browser chrome`): detectors treat a
+- **Google Chrome instead of the bundled Chromium** (`--browser chrome`, the default): detectors treat a
   Chromium without the `Google Chrome` brand as a test build.
 - **Headless display** is automatic: `--screen-info` gives headless a real screen with a taskbar,
   `--blink-settings` gives it a mouse, and pages get back the full client hints (version list,
@@ -396,7 +465,7 @@ from automation itself, and three opt-ins remove them:
   `--test-type`, which keeps `navigator.webdriver` false without the "unsupported flag" bar that
   would otherwise eat 56 px of the viewport.
 - **`clear_challenge`** clicks a Cloudflare Turnstile checkbox or a reCAPTCHA v2 box the way a person
-  does, for the test accounts a program's own rules let you make. On a virtual screen the pointer is
+  does, for accounts a site's own rules let you create. On a virtual screen the pointer is
   moved and pressed through the X server's XTEST extension, so the click reaches the page by the same
   path a mouse's does; elsewhere it is sent over DevTools. The pointer arrives from elsewhere over a
   curved path, hovers on the box, presses for a human-length hold, and nothing is clicked while a
@@ -459,4 +528,8 @@ fingerprints are always the real browser's, which is why personas are version-ma
 
 ### License
 
-`MIT`
+MIT, see [LICENSE](LICENSE) and [NOTICE](NOTICE). Dependencies are Apache-2.0 or MIT.
+
+Hutch makes a browser behave like a browser. It does not defeat paywalls, rate limits or access controls,
+and `clear_challenge` is for sites and accounts you are allowed to use. You are responsible for staying
+within a site's terms and the law where you live.

@@ -11,3 +11,5 @@ venv/
 .env
 *.db
 *.sqlite3
+.pytest_cache/
+uv.lock

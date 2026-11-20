@@ -1,0 +1,20 @@
+Hutch
+Copyright (c) 2026 Abdur Rahman
+
+Hutch is released under the MIT License (see LICENSE).
+
+Hutch depends on, but does not bundle, these projects, each used under its own license:
+
+  playwright           Apache-2.0   https://github.com/microsoft/playwright-python
+  aiohttp              Apache-2.0 AND MIT   https://github.com/aio-libs/aiohttp
+
+Optional extras:
+
+  patchright           Apache-2.0   https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python
+  playwright-stealth   MIT          https://github.com/Mattwmaster58/playwright_stealth
+  mcp                  MIT          https://github.com/modelcontextprotocol/python-sdk
+
+Development only: pytest (MIT), pytest-asyncio (Apache-2.0).
+
+Hutch drives Google Chrome, Brave, Microsoft Edge or Playwright's Chromium build, which are installed
+separately and remain under their own licenses.

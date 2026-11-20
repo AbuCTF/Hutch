@@ -810,7 +810,7 @@ def main():
     p = _Parser(
         prog="hutch",
         usage="hutch [options] <command> [<args>]",
-        description="isolated playwright session orchestrator",
+        description="stealth browser orchestrator on real Chrome",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "browser:\n"
@@ -898,7 +898,7 @@ def main():
                        help="move, click, type and scroll with a person's timing (sticks to the profile)")
         if persona:
             c.add_argument("--preset", metavar="NAME", help="fingerprint preset")
-            c.add_argument("--program", metavar="NAME", help="deterministic persona per program")
+            c.add_argument("--program", metavar="NAME", help="deterministic persona seeded from a name")
             c.add_argument("--locale", metavar="CODE", help="persona locale, e.g. ja-JP")
             c.add_argument("--timezone", metavar="TZ", help="persona timezone, e.g. Asia/Tokyo")
             c.add_argument("--tag", action="append", metavar="K=V", help="attach metadata tag")
@@ -943,7 +943,7 @@ def main():
     c.add_argument("name", nargs="?", help="secret name, typed as {{name}}; for import, the json file")
     c.add_argument("--domain", action="append", metavar="HOST", help="only type it on this site, repeatable")
     c.add_argument("--totp", action="store_true", help="an authenticator secret; {{name}} types the current code")
-    c.add_argument("--key", help="import: the object inside the file, e.g. yeswehack")
+    c.add_argument("--key", help="import: the object inside the file, e.g. example")
     c.add_argument("--map", action="append", metavar="FIELD=NAME[:totp]", help="import: field to secret, repeatable")
     c.set_defaults(func=cmd_secret)
 
