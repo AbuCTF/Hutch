@@ -124,6 +124,23 @@ def _write_profile(base, name, proxy):
         json.dump(meta, fh)
 
 
+def test_import_tolerates_odd_meta_shapes(tmp_path):
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    _write_profile(str(profiles), "ok", {"server": "http://res:1"})
+    os.makedirs(profiles / "listtags")
+    (profiles / "listtags" / "hutch_meta.json").write_text(
+        json.dumps({"name": "listtags", "proxy": {"server": "http://res:2"}, "tags": ["a", "b"]}))
+    os.makedirs(profiles / "toplist")
+    (profiles / "toplist" / "hutch_meta.json").write_text("[1, 2, 3]")
+    reg = registry.Registry(path=str(tmp_path / "r.sqlite"))
+    summary = reg.import_profiles(base_dir=str(profiles))
+    assert summary["skipped"] == 1
+    assert reg.get("listtags")["program_id"] is None
+    assert reg.get("listtags")["state"] == "aging"
+    reg.close()
+
+
 def test_import_profiles_quarantines_proxy_null(tmp_path):
     profiles = tmp_path / "profiles"
     profiles.mkdir()

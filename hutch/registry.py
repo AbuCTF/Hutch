@@ -214,9 +214,13 @@ class Registry:
             except (OSError, ValueError):
                 summary["skipped"] += 1
                 continue
+            if not isinstance(meta, dict):
+                summary["skipped"] += 1
+                continue
             proxy = meta.get("proxy")
             proxy_id = proxy.get("server") if isinstance(proxy, dict) else None
-            program = (meta.get("tags") or {}).get("program")
+            tags = meta.get("tags")
+            program = tags.get("program") if isinstance(tags, dict) else None
             if proxy_id:
                 state, note = "aging", "imported"
                 summary["imported"] += 1
