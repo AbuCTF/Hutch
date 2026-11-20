@@ -1,6 +1,7 @@
 """Built-in browser stealth evasions — works without playwright-stealth."""
 
 import importlib
+import json
 import logging
 
 log = logging.getLogger(__name__)
@@ -102,21 +103,7 @@ EVASION_SCRIPT = """
     return _origQuery.call(this, desc);
   };
 
-  // 7. WebGL vendor/renderer — hide SwiftShader/ANGLE
-  const _getParam = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function(p) {
-    if (p === 0x9245) return 'Google Inc. (NVIDIA)';     // UNMASKED_VENDOR_WEBGL
-    if (p === 0x9246) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)'; // UNMASKED_RENDERER_WEBGL
-    return _getParam.call(this, p);
-  };
-  if (typeof WebGL2RenderingContext !== 'undefined') {
-    const _getParam2 = WebGL2RenderingContext.prototype.getParameter;
-    WebGL2RenderingContext.prototype.getParameter = function(p) {
-      if (p === 0x9245) return 'Google Inc. (NVIDIA)';
-      if (p === 0x9246) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-      return _getParam2.call(this, p);
-    };
-  }
+  // 7. WebGL vendor/renderer is injected per-persona in _build_dynamic_script, coherent with platform
 
   // 8. navigator.connection — headless sometimes lacks this
   if (!navigator.connection) {
@@ -127,6 +114,18 @@ EVASION_SCRIPT = """
   }
 })();
 """
+
+
+def _webgl_for(platform):
+    """Platform-coherent WebGL UNMASKED vendor/renderer — a Mac persona must not claim a Windows GPU."""
+    p = (platform or "").lower()
+    if "mac" in p:
+        return "Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)"
+    if "linux" in p:
+        return ("Google Inc. (Intel)",
+                "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6 (Core Profile) Mesa 23.2.1)")
+    return ("Google Inc. (NVIDIA)",
+            "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)")
 
 
 def _build_dynamic_script(fingerprint=None, *, seed=0, headless=True):
@@ -151,6 +150,19 @@ def _build_dynamic_script(fingerprint=None, *, seed=0, headless=True):
     parts.append(f"Object.defineProperty(navigator, 'deviceMemory', {{configurable: true, get: () => {device_memory}}});")
     parts.append(f"Object.defineProperty(navigator, 'platform', {{configurable: true, get: () => '{platform}'}});")
     parts.append(f"Object.defineProperty(navigator, 'languages', {{configurable: true, get: () => {languages}}});")
+
+    gpu_vendor, gpu_renderer = _webgl_for(platform)
+    parts.append(f"""
+const _gpuVendor = {json.dumps(gpu_vendor)}, _gpuRenderer = {json.dumps(gpu_renderer)};
+for (const _proto of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {{
+  if (!_proto) continue;
+  const _gp = _proto.prototype.getParameter;
+  _proto.prototype.getParameter = function(p) {{
+    if (p === 0x9245) return _gpuVendor;
+    if (p === 0x9246) return _gpuRenderer;
+    return _gp.call(this, p);
+  }};
+}}""")
 
     # stable per-session canvas noise, applied to a copy so repeated reads hash the same
     parts.append(f"""
