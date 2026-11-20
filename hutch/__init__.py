@@ -1,8 +1,22 @@
-try:
-    from importlib.metadata import version as _version
-    __version__ = _version("hutch")
-except Exception:
-    __version__ = "0.0.0"
+def _find_version():
+    # a checkout reports its own pyproject.toml: the metadata an editable install wrote at install time goes stale
+    import os
+    import re
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "pyproject.toml")) as f:
+            found = re.search(r'^version = "([^"]+)"', f.read(), re.M)
+        if found:
+            return found.group(1)
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import version
+        return version("hutch")
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _find_version()
 
 from .artifacts import ArtifactStore  # noqa: F401
 from .caido import CaidoClient, CaidoConfig, CaidoError  # noqa: F401
