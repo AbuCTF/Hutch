@@ -6,10 +6,11 @@ import re
 import shutil
 import sys
 
-from . import __version__, browser
+from . import __version__, browser, driver
+from .driver import DRIVERS
 from .fingerprint import generate, generate_for_program, list_presets
 from .pool import Pool, _DEFAULT_BASE_DIR
-from .session import ProxyConfig, Session
+from .session import ProxyConfig, Session, session_class
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 _CAIDO_DEFAULT_PORT = 8080
@@ -80,7 +81,12 @@ def _load(args, name, *, create=False):
         if getattr(args, "block_private", False) and not s.block_private:
             s.block_private, changed = True, True
         if getattr(args, "driver", None) and args.driver != s.driver:
+            if set(driver.OWN_DRIVERS) & {args.driver, s.driver}:
+                raise SystemExit(f"hutch: '{name}' runs on the {s.driver} driver; make a new session "
+                                 f"to use {args.driver}")
             s.driver, changed = args.driver, True
+        if getattr(args, "nav_timeout", None) and args.nav_timeout != s.nav_timeout:
+            s.nav_timeout, changed = args.nav_timeout, True
         if getattr(args, "humanize", False) and not s.humanize:
             s.humanize, changed = True, True
         if getattr(args, "display", None) and args.display != s.display:
@@ -103,7 +109,7 @@ def _load(args, name, *, create=False):
     for t in getattr(args, "tag", None) or []:
         k, v = _parse_tag(t)
         tags[k] = v
-    s = Session(
+    s = session_class(getattr(args, "driver", None))(
         name, os.path.join(_base_dir(args), name),
         proxy=_resolve_proxy(args) if hasattr(args, "proxy") else None,
         fingerprint=fp,
@@ -116,6 +122,7 @@ def _load(args, name, *, create=False):
         driver=getattr(args, "driver", None) or "playwright",
         humanize=getattr(args, "humanize", False),
         display=getattr(args, "display", None) or "auto",
+        nav_timeout=getattr(args, "nav_timeout", None),
     )
     print(f"created: {name}")
     return s
@@ -658,6 +665,24 @@ async def cmd_doctor(_pool, args):
     sys.exit(doctor.run(_base_dir(args)))
 
 
+async def cmd_leakcheck(pool, args):
+    from . import leak
+    wanted = args.driver or [d for d in driver.CHROME_DRIVERS if driver.available(d)]
+    failed = False
+    for name in wanted:
+        s = await pool.create(f"leakcheck-{name}", headless=True, driver=name)
+        try:
+            await s.goto("about:blank")
+            got = await leak.check(s)
+        finally:
+            await pool.destroy(s.name)
+        failed = failed or got["leaks"]
+        print(f"{name:<11} {'LEAKS Runtime.enable' if got['leaks'] else 'clean':<22} "
+              f"stack={got['stack']} name={got['name']}")
+    if failed and args.strict:
+        sys.exit(1)
+
+
 async def cmd_presets(_pool, _args):
     fmt = "{:<25} {:<12} {:<15} {}"
     print(fmt.format("NAME", "VIEWPORT", "PLATFORM", "LOCALE"))
@@ -795,7 +820,7 @@ async def _run(args):
         sys.exit(1)
 
 
-_POOL_COMMANDS = {"screenshot", "call", "record", "replay", "authz", "auth"}
+_POOL_COMMANDS = {"screenshot", "call", "record", "replay", "authz", "auth", "leakcheck"}
 
 
 def main():
@@ -844,6 +869,7 @@ def main():
             "  close           same as stop\n"
             "  destroy         stop and delete a profile\n"
             "  doctor          check browsers, libraries, display and networking\n"
+            "  leakcheck       does a driver turn on Runtime.enable where a page can see it\n"
             "  gc              free disk: old artifacts, downloads, stale state, --caches\n"
             "\n"
             "daemon:\n"
@@ -888,8 +914,12 @@ def main():
         c.add_argument("--ignore-https-errors", action="store_true", help="ignore TLS errors")
         c.add_argument("--block-private", action="store_true",
                        help="refuse requests to loopback, private and other internal addresses (sticks to the profile)")
-        c.add_argument("--driver", choices=("playwright", "patchright"),
-                       help="automation driver; patchright leaves no CDP traces for bot detectors "
+        c.add_argument("--driver", choices=DRIVERS,
+                       help="automation driver; patchright leaves no CDP traces for bot detectors, cdp is "
+                            "Hutch's own DevTools client with no automation library, camoufox is an "
+                            "experimental Firefox (sticks to the profile)")
+        c.add_argument("--nav-timeout", type=int, metavar="MS",
+                       help="how long a navigation waits for the page to load, default 60000 "
                             "(sticks to the profile)")
         c.add_argument("--display", choices=("auto", "real", "virtual"),
                        help="headed browsers: real = on your desktop, virtual = a private 1920x1080 "
@@ -1074,6 +1104,12 @@ def main():
 
     c = _sub("doctor")
     c.set_defaults(func=cmd_doctor)
+
+    c = _sub("leakcheck", help="show whether each driver switches on Runtime.enable where a page can see it")
+    c.add_argument("--driver", action="append", choices=driver.CHROME_DRIVERS,
+                   help="check this driver only; repeatable, default every installed one")
+    c.add_argument("--strict", action="store_true", help="exit 1 when a driver leaks")
+    c.set_defaults(func=cmd_leakcheck)
 
     c = _sub("serve")
     c.add_argument("--idle-timeout", type=int, default=900, metavar="SEC",

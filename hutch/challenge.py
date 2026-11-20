@@ -39,9 +39,12 @@ _TOKEN_JS = """(() => {
     .reduce((a, b) => Math.max(a, b), 0);
   return {turnstile: best('[name="cf-turnstile-response"]'), recaptcha: best('[name="g-recaptcha-response"]'),
           interstitial: !!document.querySelector('#challenge-form, #challenge-stage, #cf-challenge-running'),
-          title: document.title || ''};
+          title: document.title || '', ready: document.readyState,
+          errorPage: location.protocol === 'chrome-error:'};
 })()"""
 _INTERSTITIAL_TITLE = re.compile(r"just a moment|attention required|checking your browser|verify you are", re.I)
+# a document that has parsed (interactive) or finished (complete) can be judged; one still "loading" cannot
+_LOADED = ("interactive", "complete")
 
 
 class Surface:
@@ -402,11 +405,13 @@ async def clear(surf, *, timeout=60.0, forbids_bypass=False, settle=4.0, rng=Non
 
     Returns ``{"status": ..., "kind": ..., "seconds": ..., "clicks": ...}``, where status is one of:
 
-    ``clear``       no challenge was ever shown
+    ``clear``       the page loaded and no challenge was ever shown
     ``passed``      a token or a normal page was left behind (``clicked`` says whether a click did it)
     ``grid-required``  an image challenge opened; nothing was guessed
     ``hitl``        the session is tagged as forbidding bypass; the page was not touched
     ``timeout``     the widget never settled
+    ``load-failed`` the page itself never loaded (an error page, or a document still loading when the
+                    time ran out), so there was nothing to judge: not the same as ``clear``
     """
     started = time.monotonic()
     pointer = pointer_for(surf, rng)
@@ -419,7 +424,7 @@ async def clear(surf, *, timeout=60.0, forbids_bypass=False, settle=4.0, rng=Non
 
 async def _clear(surf, pointer, started, timeout, forbids_bypass, settle, on_event):
     emit = on_event or (lambda *a, **k: None)
-    clicks, kind, last_seen, clicked_at = 0, None, 0.0, None
+    clicks, kind, last_seen, clicked_at, loaded = 0, None, 0.0, None, False
 
     def done(status, **extra):
         return {"status": status, "kind": kind, "seconds": round(time.monotonic() - started, 1),
@@ -434,8 +439,15 @@ async def _clear(surf, pointer, started, timeout, forbids_bypass, settle, on_eve
             meta = await surf.info()
         except Exception:
             meta = {}
+        if meta.get("url", "").startswith("chrome-error:"):
+            emit("challenge", status="load-failed", url=meta.get("url"))
+            return done("load-failed", reason="the browser could not load the page")
         on_interstitial = bool(_INTERSTITIAL_TITLE.search(meta.get("title", "")) or "__cf_chl" in meta.get("url", ""))
         info = {"interstitial": True, "title": meta.get("title", "")} if on_interstitial else await tokens(surf)
+        if info.get("errorPage"):
+            emit("challenge", status="load-failed", title=info.get("title"))
+            return done("load-failed", reason="the browser could not load the page")
+        loaded = loaded or on_interstitial or info.get("ready") in _LOADED
         shown = await widgets(surf)
         if shown:
             kind, last_seen = shown[0]["kind"], time.monotonic()
@@ -453,7 +465,7 @@ async def _clear(surf, pointer, started, timeout, forbids_bypass, settle, on_eve
                 continue
             if last_seen and time.monotonic() - last_seen > settle:
                 return done("passed", clicked=clicks > 0)
-            if not last_seen and time.monotonic() - started > settle * 2:
+            if not last_seen and time.monotonic() - started > settle * 2 and loaded:
                 return done("clear")
             await asyncio.sleep(0.5)
             continue
@@ -471,4 +483,7 @@ async def _clear(surf, pointer, started, timeout, forbids_bypass, settle, on_eve
             await asyncio.sleep(1.5)
             continue
         await asyncio.sleep(0.7)
+    if not loaded and not kind:
+        emit("challenge", status="load-failed")
+        return done("load-failed", reason="the page never finished loading")
     return done("timeout")

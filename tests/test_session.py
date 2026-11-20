@@ -184,7 +184,7 @@ async def test_goto_syncs_viewport_after_navigation(tmp_path, monkeypatch):
         def is_closed(self):
             return False
 
-        async def goto(self, url, wait_until="load"):
+        async def goto(self, url, wait_until="load", timeout=None):
             calls.append(("goto", url, wait_until))
 
     page = Page()

@@ -3,7 +3,8 @@
     python examples/clear_challenge.py https://example.com/signup
 
 Needs Google Chrome. For the best results run it headed on a virtual screen (Linux, needs Xvfb):
-the pointer then reaches the page through the X server, like a real mouse.
+the pointer then reaches the page through the X server, like a real mouse. driver="cdp" works the
+same with no automation library attached to the browser.
 """
 import asyncio
 import sys
@@ -16,7 +17,7 @@ async def main(url):
         s = await pool.create("challenge-demo", headless=False, display="virtual", driver="patchright")
         await s.goto(url)
         result = await s.clear_challenge(timeout=60)
-        print(result)  # {"status": "passed" | "clear" | "grid-required" | "hitl" | "timeout", ...}
+        print(result)  # {"status": "passed" | "clear" | "grid-required" | "hitl" | "timeout" | "load-failed", ...}
         if result["status"] == "grid-required":
             print(await s.await_human("image grid", until="challenge", timeout=300))
         await pool.destroy("challenge-demo")

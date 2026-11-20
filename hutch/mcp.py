@@ -220,10 +220,19 @@ def create_mcp_server():
                         },
                         "driver": {
                             "type": "string",
-                            "enum": ["playwright", "patchright"],
+                            "enum": ["playwright", "patchright", "cdp", "camoufox"],
                             "default": "playwright",
                             "description": "patchright leaves no CDP traces for bot detectors, "
-                                           "but shows no console messages (create only)",
+                                           "but shows no console messages. cdp is Hutch's own DevTools "
+                                           "client with no automation library: same clean traces, no "
+                                           "routing, mocking, request capture or aria snapshots. camoufox "
+                                           "is an experimental Firefox (create only)",
+                        },
+                        "nav_timeout": {
+                            "type": "integer",
+                            "default": 60000,
+                            "description": "How long a goto waits for a page to load, in ms, before "
+                                           "retrying once and then raising (create only)",
                         },
                         "tags": {
                             "type": "object",
@@ -262,7 +271,9 @@ def create_mcp_server():
                             "default": "visible",
                             "description": "Element state to wait for",
                         },
-                        "timeout": {"type": "integer", "default": 30000, "description": "Timeout in ms"},
+                        "timeout": {"type": "integer", "description":
+                                    "Timeout in ms: per attempt for goto (default: the session's nav_timeout, "
+                                    "60000), 30000 for wait_for"},
                     },
                     "required": ["session"],
                 },
@@ -281,7 +292,8 @@ def create_mcp_server():
                     "type": "object",
                     "properties": {
                         "session": {"type": "string", "description": "Session name"},
-                        "mode": {"type": "string", "enum": ["aria", "elements"], "default": "aria"},
+                        "mode": {"type": "string", "enum": ["aria", "elements"], "default": "aria",
+                                 "description": "elements is the default on the cdp driver, which has no aria snapshot"},
                         "selector": {"type": "string", "description": "Limit the snapshot to this element (ref or CSS)"},
                         "filter": {"type": "string", "enum": ["all", "interactive"], "default": "all"},
                         "diff": {"type": "boolean", "default": False},
@@ -760,6 +772,7 @@ def create_mcp_server():
                     driver=arguments.get("driver") or "playwright",
                     humanize=arguments.get("humanize", False),
                     display=arguments.get("display") or "auto",
+                    nav_timeout=arguments.get("nav_timeout"),
                 )
                 return [TextContent(type="text", text=_json(_session_info(s)))]
 
@@ -815,6 +828,7 @@ def create_mcp_server():
                 result = await session.goto(
                     url,
                     wait_until=arguments.get("wait_until", "load"),
+                    timeout=arguments.get("timeout"),
                 )
                 return [TextContent(type="text", text=_state(result))]
 
@@ -850,7 +864,7 @@ def create_mcp_server():
         # ------ hutch_observe
         if name == "hutch_observe":
             session = await _get_session(arguments["session"])
-            if arguments.get("mode", "aria") == "aria":
+            if arguments.get("mode", "elements" if session.driver == "cdp" else "aria") == "aria":
                 snap = await session.aria_snapshot(
                     selector=arguments.get("selector"),
                     interactive=arguments.get("filter") == "interactive",

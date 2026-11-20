@@ -11,7 +11,7 @@ from . import driver as _driver
 from .caido import CaidoClient, CaidoConfig
 from .differ import diff_responses
 from .live import LiveServer
-from .session import Fingerprint, ProxyConfig, Session
+from .session import Fingerprint, ProxyConfig, Session, session_class
 
 
 _DEFAULT_BASE_DIR = os.environ.get("HUTCH_BASE_DIR") or os.path.expanduser("~/.hutch/profiles")
@@ -41,9 +41,11 @@ class Pool:
         self._discover_existing()
 
     async def _driver_for(self, session):
-        """The started driver this session runs on."""
+        """The started driver this session runs on; the cdp driver needs none."""
         if not self._playwright:
             raise RuntimeError("pool not started")
+        if session.driver in _driver.OWN_DRIVERS:
+            return None
         if session.driver == "playwright":
             return self._playwright
         if session.driver not in self._drivers:
@@ -99,7 +101,8 @@ class Pool:
                      headless=True, ignore_https_errors=False,
                      launch=True, tags=None, caido=False, launcher=None,
                      browser=None, endpoint=None, strict_proxy=True, require_proxy=False,
-                     block_private=False, driver="playwright", humanize=False, display="auto"):
+                     block_private=False, driver="playwright", humanize=False, display="auto",
+                     nav_timeout=None):
         if name in self._sessions:
             raise ValueError(f"session '{name}' already exists")
 
@@ -111,7 +114,7 @@ class Pool:
             proxy = ProxyConfig(server=proxy)
 
         profile_dir = os.path.join(self.base_dir, name)
-        session = Session(
+        session = session_class(driver)(
             name=name,
             profile_dir=profile_dir,
             proxy=proxy,
@@ -128,6 +131,7 @@ class Pool:
             driver=driver,
             humanize=humanize,
             display=display,
+            nav_timeout=nav_timeout,
         )
 
         if launch:

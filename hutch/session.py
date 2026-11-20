@@ -34,6 +34,9 @@ TargetClosedError = _driver.TARGET_CLOSED
 
 _log = logging.getLogger(__name__)
 
+# a page that is slow to answer is not a page that is down: wait a minute per attempt, not Playwright's 30s
+DEFAULT_NAV_TIMEOUT = 60000
+
 
 _ANNOTATE_JS = """items => {
   const root = document.createElement("div");
@@ -105,6 +108,8 @@ class ProxyConfig:
 
 
 _META_FILE = "hutch_meta.json"
+_IDENTITY_JS = ("({ua: navigator.userAgent, brands: navigator.userAgentData ? navigator.userAgentData.brands : null,"
+                " platform: navigator.userAgentData ? navigator.userAgentData.platform : ''})")
 _UA_CACHE = "hutch_identity.json"  # the browser's own brands, read once per browser version
 
 _DISCONNECT_PATTERNS = (
@@ -278,8 +283,11 @@ class Session:
                  ignore_https_errors=False, stealth=True, tags=None,
                  capture=True, record_video=None, launcher=None,
                  browser=None, endpoint=None, strict_proxy=True, require_proxy=False,
-                 block_private=False, driver="playwright", humanize=False, display="auto"):
+                 block_private=False, driver="playwright", humanize=False, display="auto",
+                 nav_timeout=None):
         self.name = name
+        # how long goto() waits for a page to load before it gives up (milliseconds); sticks to the profile
+        self.nav_timeout = int(nav_timeout or DEFAULT_NAV_TIMEOUT)
         # move, click, type and scroll with a person's timing instead of teleporting; sticks to the profile
         self.humanize = humanize
         # headed browsers: "real" opens on the desktop, "virtual" on a private Xvfb screen no window
@@ -288,7 +296,8 @@ class Session:
             raise ValueError(f"unknown display '{display}', expected auto, real or virtual")
         self.display = display
         self._vdisplay = None
-        # playwright, or patchright (no Runtime.enable / Console.enable traces); sticks to the profile
+        # playwright, patchright (no Runtime.enable / Console.enable traces) or cdp (no library at all)
+        # sticks to the profile
         self.driver = _driver.check(driver or "playwright")
         # opt-in: refuse every request to loopback, private, link-local and other internal addresses
         self.block_private = block_private
@@ -408,6 +417,7 @@ class Session:
             "driver": self.driver,
             "humanize": self.humanize,
             "display": self.display,
+            "nav_timeout": self.nav_timeout,
         }
         with open(os.path.join(self.profile_dir, _META_FILE), "w") as f:
             json.dump(meta, f, indent=2)
@@ -447,7 +457,7 @@ class Session:
         )
         # profiles from before 0.12 were always launched by playwright with a fingerprint
         legacy = "launcher" not in meta
-        s = cls(
+        s = session_class(meta.get("driver"))(
             name=meta["name"],
             profile_dir=profile_dir,
             proxy=proxy,
@@ -465,6 +475,7 @@ class Session:
             driver=meta.get("driver", "playwright"),
             humanize=meta.get("humanize", False),
             display=meta.get("display", "auto"),
+            nav_timeout=meta.get("nav_timeout"),
         )
         s._created_at = meta.get("created_at", time.time())
         s.state = SessionState.HIBERNATED
@@ -933,26 +944,28 @@ class Session:
                 return _real_ua_params(seen["ua"], seen["brands"], seen["platform"], version)
         if not self._owned:
             return None  # never open a tab in a browser someone else is using; its starter cached this
+        seen = await self._read_identity()
+        if not seen or not seen.get("brands"):
+            return None
+        with contextlib.suppress(OSError):
+            with open(cache, "w") as f:
+                json.dump({**seen, "version": version}, f)
+        return _real_ua_params(seen["ua"], seen["brands"], seen["platform"], version)
+
+    async def _read_identity(self):
+        """{"ua", "brands", "platform"} as a throwaway secure page reports them, or None."""
         page = await self._context.new_page()
         try:
             await page.route("https://hutch.invalid/**", lambda route: route.fulfill(
                 body="<!doctype html><title>hutch</title>", content_type="text/html"))
             await page.goto("https://hutch.invalid/", wait_until="domcontentloaded", timeout=10000)
-            seen = await page.evaluate(
-                "({ua: navigator.userAgent, brands: navigator.userAgentData ? navigator.userAgentData.brands : null,"
-                " platform: navigator.userAgentData ? navigator.userAgentData.platform : ''})")
+            return await page.evaluate(_IDENTITY_JS)
         except Exception as exc:
             _log.debug("session '%s': client-hint probe failed: %s", self.name, exc)
             return None
         finally:
             with contextlib.suppress(Exception):
                 await page.close()
-        if not seen.get("brands"):
-            return None
-        with contextlib.suppress(OSError):
-            with open(cache, "w") as f:
-                json.dump({**seen, "version": version}, f)
-        return _real_ua_params(seen["ua"], seen["brands"], seen["platform"], version)
 
     def _ua_override(self, page):
         """The page's one override task, started on first call; await it before the page's first
@@ -1693,7 +1706,13 @@ class Session:
         return d
 
     @_retry_on_disconnect
-    async def goto(self, url, *, wait_until="load"):
+    async def goto(self, url, *, wait_until="load", timeout=None, retries=1):
+        """Open ``url`` and wait for ``wait_until``.
+
+        ``timeout`` (milliseconds, default the session's ``nav_timeout``) bounds each attempt. A page
+        that does not get there in time is loaded again up to ``retries`` times, since a stalled first
+        response is often a one-off, and only then is the timeout raised.
+        """
         self._require_active()
         # attached to someone's visible browser: work in our own tab, never theirs
         shared = self._browser is not None and not self._owned and not self.headless and self._focus is None
@@ -1702,7 +1721,14 @@ class Session:
             page = await self.new_page()
         self._last_activity = time.time()
         self._last_url = url
-        await page.goto(url, wait_until=wait_until)
+        for attempt in range(max(0, retries) + 1):
+            try:
+                await page.goto(url, wait_until=wait_until, timeout=timeout or self.nav_timeout)
+                break
+            except _driver.TIMEOUTS as exc:
+                if attempt >= retries:
+                    raise
+                _log.warning("session '%s': %s did not load (%s), trying again", self.name, url, exc)
         await self._sync_hyprland_viewport(page)
         return await self.page_state()
 
@@ -2733,8 +2759,10 @@ class Session:
 
         For accounts a site's rules let you create. Handles a Cloudflare Turnstile checkbox
         (managed, or the full-page check) and a reCAPTCHA v2 box; waits for the widget to settle and
-        returns {"status": "clear" | "passed" | "grid-required" | "hitl" | "timeout", "kind", "seconds",
-        "clicks"}. An image grid is not attempted: the status is "grid-required" and the page is left
+        returns {"status": "clear" | "passed" | "grid-required" | "hitl" | "timeout" | "load-failed",
+        "kind", "seconds", "clicks"}. ``clear`` means the page loaded and showed no challenge;
+        ``load-failed`` means it never loaded (an error page, or still loading when the time ran out),
+        so nothing could be judged. An image grid is not attempted: the status is "grid-required" and the page is left
         as it is. With the ``forbids_bypass`` tag on the session (or ``forbids_bypass=True``) nothing is
         clicked and the status is "hitl", for a site that does not allow bypassing its checks.
         """
@@ -2747,7 +2775,7 @@ class Session:
             forbids_bypass = str(self.tags.get("forbids_bypass", "")).lower() in ("1", "true", "yes")
         running = _browser.status(self.profile_dir) if self._owned else None
         xdisplay = (running or {}).get("display") or (self._vdisplay.display if self._vdisplay else None)
-        surf = _challenge.surface(page, xdisplay)
+        surf = self._challenge_surface(page, xdisplay)
         try:
             result = await _challenge.clear(
                 surf, timeout=timeout, forbids_bypass=forbids_bypass,
@@ -2756,6 +2784,9 @@ class Session:
             await surf.close()
         self.challenge = {**result, "at": round(time.time())}
         return result
+
+    def _challenge_surface(self, page, xdisplay):
+        return _challenge.surface(page, xdisplay)
 
     async def await_human(self, reason="challenge", *, until=None, timeout=600, poll=2.0,
                           screenshot=True, artifacts=None):
@@ -3166,6 +3197,7 @@ class Session:
             "block_private": self.block_private,
             "humanize": self.humanize,
             "display": self.display,
+            "nav_timeout": self.nav_timeout,
             "challenge": self.challenge["status"] if self.challenge else None,
             "owned": self._owned if self.is_alive else None,
             "running": self.running,
@@ -3176,3 +3208,14 @@ class Session:
         state = "alive" if self.is_alive else "closed"
         proxy = self.proxy.server if self.proxy else "direct"
         return f"<Session '{self.name}' {state} proxy={proxy}>"
+
+
+def session_class(driver):
+    """The Session class a driver runs on: the Playwright-shaped one, or ``CdpSession`` for ``cdp``."""
+    if driver == "cdp":
+        from .cdpsession import CdpSession
+        return CdpSession
+    if driver == "camoufox":
+        from .camoufoxsession import CamoufoxSession
+        return CamoufoxSession
+    return Session

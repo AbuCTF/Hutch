@@ -14,7 +14,7 @@ from hutch.session import Session
 
 _TEST_BASE = os.path.join(tempfile.gettempdir(), "hutch-test-identity-profiles")
 _WIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
-_DRIVERS = [d for d in _driver.DRIVERS if _driver.available(d)]
+_DRIVERS = [d for d in _driver.PLAYWRIGHT_DRIVERS if _driver.available(d)]
 
 _PROBE = """async () => ({
   ua: navigator.userAgent,

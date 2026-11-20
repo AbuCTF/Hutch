@@ -32,9 +32,9 @@ class SessionHandle:
         call.__name__ = command
         return call
 
-    async def goto(self, url, *, wait_until="load"):
+    async def goto(self, url, *, wait_until="load", timeout=None, retries=1):
         return await self._client._call("goto", {
-            "name": self.name, "url": url, "wait_until": wait_until})
+            "name": self.name, "url": url, "wait_until": wait_until, "timeout": timeout, "retries": retries})
 
     async def click(self, selector, *, wait_after="networkidle", timeout=5000):
         return await self._client._call("click", {
@@ -630,7 +630,7 @@ class HutchClient:
                      headless=True, ignore_https_errors=False,
                      locale=None, timezone=None, tags=None, caido=False,
                      browser=None, block_private=False, driver="playwright", humanize=False,
-                     display="auto"):
+                     display="auto", nav_timeout=None):
         result = await self._call("create", {
             "name": name, "program": program, "preset": preset,
             "proxy": proxy, "headless": headless,
@@ -643,6 +643,7 @@ class HutchClient:
             "driver": driver,
             "humanize": humanize,
             "display": display,
+            "nav_timeout": nav_timeout,
         })
         return SessionHandle(self, name)
 

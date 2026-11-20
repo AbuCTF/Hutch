@@ -11,7 +11,8 @@ at the same time.
 - **Batteries included.** Profiles and logins that persist, per-session proxies, headed/headless
   switching without losing tabs, a virtual display, humanized input, secrets an agent can type but never read,
   record and replay, multi-account replay, and a hand-off to a person when a check needs one.
-- **Driver-agnostic.** `playwright` by default, `patchright` for no `Runtime.enable` traces. Same API.
+- **Driver-agnostic.** `playwright` by default, `patchright` for no `Runtime.enable` traces, `cdp` for no
+  automation library at all (Hutch's own DevTools client). Same API, the `cdp` subset is listed under [Stealth](#stealth).
 - **Guarded.** Image grids are never guessed, `forbids_bypass` sessions are never clicked, secrets are bound
   to domains and redacted from output, and a private-network block and a deny-list keep sessions off hosts you name.
 
@@ -36,7 +37,8 @@ asks for sudo only if the browser's system libraries are missing, then runs `hut
 update; `HUTCH_REF=<tag or commit>` pins a version. Uninstall with
 `rm -rf ~/.hutch/venv ~/.local/bin/hutch ~/.local/bin/hutch-mcp` (profiles in `~/.hutch/profiles` are kept).
 
-Optional extras: `hutch[patchright]` for the stealth driver, `hutch[stealth]` for persona patches.
+Optional extras: `hutch[patchright]` for the stealth driver, `hutch[stealth]` for persona patches,
+`hutch[camoufox]` for the experimental Firefox driver (then `python -m camoufox fetch`). The `cdp` driver needs nothing extra.
 
 **Virtual display (Linux).** `--display virtual` runs headed Chrome on a private 1920x1080 Xvfb screen,
 which tiling window managers cannot resize and where `clear_challenge` clicks through the X server.
@@ -95,9 +97,11 @@ result = await s.clear_challenge(timeout=60)
 ```
 
 `clear_challenge` clicks a Cloudflare Turnstile or reCAPTCHA v2 checkbox the way a person does, once per
-appearance, and waits for the answer. `status` is one of `clear` (nothing was shown), `passed`,
-`grid-required` (an image grid opened; nothing is guessed, hand it to a person with `await_human`),
-`hitl` (the session is tagged `forbids_bypass`, nothing was touched) or `timeout`. Cloudflare's
+appearance, and waits for the answer. `status` is one of `clear` (the page loaded and showed nothing),
+`passed`, `grid-required` (an image grid opened; nothing is guessed, hand it to a person with
+`await_human`), `hitl` (the session is tagged `forbids_bypass`, nothing was touched), `timeout` or
+`load-failed` (the page never loaded, so there was nothing to judge: an error page, or a document still
+loading when the time ran out; `goto` raises its own timeout first, see `nav_timeout` under [Stealth](#stealth)). Cloudflare's
 silent checks pass without a click when the browser is real and nothing scripts the page while the check
 is up; for those, wait for the page.
 For the best results use real Chrome, `driver="patchright"`, headed on `display="virtual"`
@@ -284,6 +288,9 @@ hutch create target-a --preset win-desktop-1080p    # persona: fake but coherent
 hutch create target-a --proxy http://127.0.0.1:8081 --ignore-https-errors
 hutch create reader --block-private                  # for untrusted URLs: no localhost, LAN or metadata
 hutch create quiet --driver patchright --browser chrome  # fewest automation traces
+hutch create bare --driver cdp                       # no automation library at all
+hutch create slow --nav-timeout 120000               # wait two minutes per page load, default one
+hutch leakcheck                                      # does each driver switch on Runtime.enable
 hutch create hand --humanize                         # move, click, type and scroll like a person
 hutch list
 hutch screenshot target-a evidence.png --full-page
@@ -400,7 +407,7 @@ async with HutchClient() as client:
 | **Request interception** | Modify headers, block URLs, swap auth tokens |
 | **Deny hosts** | `session.deny_hosts(check)`: hosts never to contact, refused by the request guard and, with the private-network block, by the proxy every connection goes through (service workers and WebSockets included) |
 | **Private network block** | Opt-in `block_private`: refuse loopback, LAN, link-local and metadata addresses, for sessions that open untrusted URLs. Checked per request, then again by a local proxy that connects only to the address it checked (no DNS rebinding, service workers covered) |
-| **Stealth driver** | Opt-in `driver: patchright` per session: no `Runtime.enable` or `Console.enable` traces, scripts evaluated out of the page's sight |
+| **Stealth drivers** | Opt-in `driver: patchright` per session: no `Runtime.enable` or `Console.enable` traces, scripts evaluated out of the page's sight. `driver: cdp`: the same, with no automation library at all |
 | **Cookie/storage API** | Get/set/delete cookies and localStorage |
 | **Health monitoring** | Auto-detect captcha, auth expiry, rate limiting |
 | **HITL handoff** | Auto-pause on challenges; `await_human` pauses, screenshots, alerts and waits until a person is done (`hutch resume`, a condition, or a timeout) |
@@ -430,12 +437,43 @@ each preset bundles a matching UA, platform, screen, locale, and timezone.
 ### Stealth
 
 Without a persona, a session is the real browser with nothing spoofed. The tells that remain come
-from automation itself, and three opt-ins remove them:
+from automation itself, and these opt-ins remove them:
 
 - **`driver: patchright`** (`--driver patchright`, `pip install 'hutch[patchright]'`) drives the
   browser without `Runtime.enable` and `Console.enable`, the CDP calls detectors probe for, and runs
   Hutch's own scripts in an isolated world. Costs: no console messages in `observe`, and
   `evaluate` reaches page globals only because Hutch asks for the main world explicitly.
+- **`driver: cdp`** (`--driver cdp`, `Pool.create(driver="cdp")`, `"driver": "cdp"` over MCP and the
+  daemon) leaves out the automation library altogether. Hutch starts Chrome itself either way; this driver
+  talks to it through `hutch.cdp`, a client of its own that sends only the commands a call needs: no
+  `Runtime.enable`, no init scripts, no routes, no emulation overrides (headless sessions still get
+  the client-hint override that gives back what `--user-agent` blanks). In Hutch's own benchmark the edge
+  came from the real Chrome launch, the GPU flags and the X-server click, not from which library
+  was attached, and this driver keeps all three. It supports navigation with load waits,
+  `evaluate`, `content`, screenshots, CSS-selector `click`/`fill`/`type`/`press`, mouse and keyboard,
+  cookies, tabs, dialogs, popups, `observe` (as elements), `humanize` and `clear_challenge`. It has no
+  request routing, mocking, capture or HAR, aria snapshots, role/text locators, tracing,
+  emulation, proxy authentication or touch personas, and `await_human(until="challenge")` sees an
+  interstitial page but not a widget inside it; those calls raise `Unsupported` naming the call, and
+  the session tells you to use another driver. Selectors are CSS, plus `:has-text("...")` as
+  `observe` writes them. `page_state` has no `dom` on this driver, because reading the page after
+  every action is what a Cloudflare interstitial punishes; use `observe`, `content` or `evaluate`.
+- **`nav_timeout`** (`--nav-timeout MS`, `create(nav_timeout=...)`, sticks to the profile) is how long
+  `goto` waits for a page to load: 60 000 ms by default, per attempt, and a load that times out is
+  tried once more (`goto(url, timeout=..., retries=...)`) before the timeout is raised. A page that
+  did not load is never reported as having no challenge: `clear_challenge` answers `load-failed`.
+- **`hutch leakcheck`** runs a probe that does what a detector does: it logs an `Error` whose
+  `name` (older Chrome: `stack`) is a getter and counts the reads, which go up exactly when
+  `Runtime.enable` is on. Measured here on Chrome 156: `playwright` leaks (2 reads where a clean
+  browser has 1), `patchright` and `cdp` do not. The classic `stack` trap no longer fires on
+  Chrome 156 even with `Runtime.enable` on, which is why the probe sets both; the test suite turns
+  `Runtime.enable` on by hand to prove the probe still sees it.
+- **`driver: camoufox`** (experimental, `pip install camoufox && python -m camoufox fetch`) runs
+  the same page API on Camoufox, a patched Firefox, in a persistent profile. In the benchmark it had the lowest
+  CreepJS like-headless score (6%) and cleared the managed and full-page Cloudflare checks, and it failed the
+  interstitial, so it is a second opinion, not a replacement. There is no DevTools protocol on
+  Firefox: no `cdp_send`, no X-server click, and `clear_challenge` uses the community recipe (find the
+  widget frame, move, click) instead of Hutch's solver.
 - **Google Chrome instead of the bundled Chromium** (`--browser chrome`, the default): detectors treat a
   Chromium without the `Google Chrome` brand as a test build.
 - **Headless display** is automatic: `--screen-info` gives headless a real screen with a taskbar,
@@ -471,7 +509,8 @@ from automation itself, and three opt-ins remove them:
   curved path, hovers on the box, presses for a human-length hold, and nothing is clicked while a
   managed widget is still "Verifying". An image grid is never attempted: the status is
   `grid-required`. A session tagged `forbids_bypass` (`--tag forbids_bypass=true`) is never clicked:
-  the status is `hitl`, for a person. Works with every driver.
+  the status is `hitl`, for a person. A page that never loaded (an error page, or a document still
+  loading when the time ran out) is `load-failed`, never `clear`. Works with every driver.
 
       await session.clear_challenge(timeout=60)
       # {"status": "passed", "kind": "turnstile", "seconds": 21.4, "clicks": 1, "clicked": true}
@@ -499,6 +538,28 @@ The interstitial row came after a finding worth knowing: a Cloudflare interstiti
 page is only watched through DevTools DOM reads and fails every time when a script is run in it on a
 poll (0 of 16 attempts before the change, 8 of 8 after), so `clear_challenge` never scripts a page that
 shows one. If you poll such a page yourself, expect to be trusted less.
+
+The same pages with `--driver cdp`, selected through `Pool.create(driver="cdp")`, headed on the virtual
+screen: the first four rounds of five cleared 16 of 16 (non-interactive 22-34 s, managed 21-40 s with
+one click, scrapingcourse 20-31 s, nopecha 25-59 s with one click). The fifth round and the reruns
+after it missed on three pages, and `patchright` missed the same pages in a control run in the same
+hour, so those were the test pages tiring of one address, not the driver.
+Five rounds is small; read it as "matches patchright", not as a rate.
+
+The 31% like-headless score is five of CreepJS's sixteen flags, and on Linux desktop Chrome they are the
+platform, not a trace of Hutch: `noContentIndex`, `noContactsManager` and `noDownlinkMax` are
+Android and ChromeOS APIs (`ContentIndex`, `ContactsManager`, `NetworkInformation.downlinkMax`), and
+CreepJS's own platform estimator expects all three absent on Windows, macOS and Linux; `noWebShare` is
+`navigator.share`, which Linux desktop Chrome does not have (Windows and Android Chrome do);
+`hasKnownBgColor` is the CSS system colour `ActiveText` computing to `rgb(255, 0, 0)`. That one was
+measured the same in headless, headed on the virtual screen and headed on a Wayland desktop with a dark theme, and
+no Chrome flag moves it (`--gtk-version`, forced dark mode through `--blink-settings`, the
+`ForcedColors` feature and `--force-high-contrast` all leave it red, as does a dark `color-scheme`). The only ways to change the
+reading are `forced-colors` emulation, which adds a `forced-colors: active` tell, or a script that
+lies about `getComputedStyle`, which is what Hutch avoids on purpose. Closing them means
+adding Android APIs to a Linux browser, which makes the platform estimate contradict the user agent, so
+Hutch leaves them: 31% is the floor for real Linux Chrome here. Camoufox's 6% is Firefox, which CreepJS
+does not run those Chrome-only checks on.
 
 Measured on 2026-11-11, headless, Linux (WSL2), no persona:
 

@@ -360,6 +360,7 @@ class HutchDaemon:
             driver=params.get("driver") or "playwright",
             humanize=params.get("humanize", False),
             display=params.get("display") or "auto",
+            nav_timeout=params.get("nav_timeout"),
         )
         self._get_health(name)
         return _session_info(s)

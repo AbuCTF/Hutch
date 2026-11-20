@@ -10,7 +10,7 @@ class Script:
     """Stands in for a browser: widgets(), tokens() and grid_open() answer from a script."""
 
     def __init__(self, monkeypatch, *, shown=None, tokens=None, grid=False):
-        self.shown, self.tok, self.grid, self.clicks = shown or [], tokens or {}, grid, []
+        self.shown, self.tok, self.grid, self.clicks = shown or [], tokens or {"ready": "complete"}, grid, []
         monkeypatch.setattr(challenge, "widgets", self._widgets)
         monkeypatch.setattr(challenge, "tokens", self._tokens)
         monkeypatch.setattr(challenge, "grid_open", self._grid)
@@ -27,7 +27,7 @@ class Script:
 
     async def _click(self, surf, widget, pointer):
         self.clicks.append(widget["kind"])
-        self.tok = {"turnstile": 700}
+        self.tok = {"turnstile": 700, "ready": "complete"}
         return (1, 1)
 
 
@@ -168,3 +168,49 @@ async def test_an_interstitial_is_never_scripted_while_it_is_up(monkeypatch):
 
     await challenge.clear(Surf(), timeout=3, settle=0.1)
     assert polled == [] and s.clicks == ["turnstile"]
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_never_loaded_is_not_reported_clear(monkeypatch):
+    Script(monkeypatch, tokens={"ready": "loading"})
+    out = await challenge.clear(challenge.Surface(), timeout=2, settle=0.1)
+    assert out["status"] == "load-failed" and out["clicks"] == 0 and "never finished" in out["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_loads_late_is_judged_once_it_has(monkeypatch):
+    seen = {"n": 0}
+
+    def tokens():
+        seen["n"] += 1
+        return {"ready": "complete" if seen["n"] > 4 else "loading"}
+
+    Script(monkeypatch, tokens=tokens)
+    out = await challenge.clear(challenge.Surface(), timeout=10, settle=0.1)
+    assert out["status"] == "clear" and seen["n"] > 4
+
+
+@pytest.mark.asyncio
+async def test_a_browser_error_page_fails_at_once(monkeypatch):
+    Script(monkeypatch)
+
+    class Surf(challenge.Surface):
+        async def info(self):
+            return {"title": "example.com", "url": "chrome-error://chromewebdata/"}
+
+    out = await challenge.clear(Surf(), timeout=30, settle=0.1)
+    assert out["status"] == "load-failed" and out["seconds"] < 2
+
+
+@pytest.mark.asyncio
+async def test_a_widget_seen_on_a_slow_page_still_times_out_as_a_timeout(monkeypatch):
+    Script(monkeypatch, shown=[widget(checkbox=False)], tokens={"ready": "loading"})
+    out = await challenge.clear(challenge.Surface(), timeout=2, settle=0.1)
+    assert out["status"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_an_error_page_the_document_gives_away_fails_at_once(monkeypatch):
+    Script(monkeypatch, tokens={"ready": "complete", "errorPage": True})
+    out = await challenge.clear(challenge.Surface(), timeout=30, settle=0.1)
+    assert out["status"] == "load-failed" and out["seconds"] < 2
