@@ -5,8 +5,9 @@ import os
 import re
 import shutil
 import sys
+import time
 
-from . import __version__, browser, driver
+from . import __version__, browser, driver, warm
 from .driver import DRIVERS
 from .fingerprint import generate, generate_for_program, list_presets
 from .pool import Pool, _DEFAULT_BASE_DIR
@@ -697,24 +698,32 @@ async def cmd_registry(_pool, args):
     try:
         if args.registry_sub == "import":
             print(json.dumps(reg.import_profiles()))
+        elif args.registry_sub == "advance":
+            moved = reg.advance_all(program_id=args.program)
+            if not moved:
+                print("(no profiles moved)")
+            for m in moved:
+                print(f"{m['profile_name']}: {m['from']} -> {m['to']}")
         elif args.registry_sub == "show":
             row = reg.get(args.profile)
             if not row:
                 print(f"hutch: no registry row for '{args.profile}'", file=sys.stderr)
                 sys.exit(1)
+            row["warmth"] = warm.warmth_score(row, int(time.time()))
             print(json.dumps(row, indent=2))
         else:
             rows = reg.ls(program_id=args.program, state=args.state)
             if not rows:
                 print("(no profiles registered — run 'hutch registry import')")
                 return
-            fmt = "{:<16} {:<4} {:<9} {:<24} {:>4} {:>4} {:>5} {}"
-            print(fmt.format("PROGRAM", "ROLE", "STATE", "PROFILE", "USE", "CHAL", "RATE", "PROXY"))
+            now = int(time.time())
+            fmt = "{:<16} {:<4} {:<9} {:<24} {:>4} {:>4} {:>5} {:>5} {}"
+            print(fmt.format("PROGRAM", "ROLE", "STATE", "PROFILE", "USE", "CHAL", "RATE", "WARM", "PROXY"))
             for r in rows:
                 rate = f"{r['challenge_count'] / r['sessions_count']:.0%}" if r["sessions_count"] else "-"
                 print(fmt.format(r["program_id"] or "-", r["role"] or "-", r["state"],
                                  r["profile_name"][:24], r["sessions_count"], r["challenge_count"],
-                                 rate, r["proxy_id"] or "-"))
+                                 rate, f"{warm.warmth_score(r, now):.2f}", r["proxy_id"] or "-"))
     finally:
         reg.close()
 
@@ -1176,6 +1185,8 @@ def main():
     rsh = rsub.add_parser("show", help="show one profile's registry row")
     rsh.add_argument("profile", help="profile name")
     rsub.add_parser("import", help="seed the registry from existing profiles; quarantine proxy-null ones")
+    ra = rsub.add_parser("advance", help="sweep profiles through the warm lifecycle policy")
+    ra.add_argument("program", nargs="?", help="limit the sweep to one program id")
     c.set_defaults(func=cmd_registry)
 
     args = p.parse_args()
