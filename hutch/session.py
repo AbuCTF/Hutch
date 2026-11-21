@@ -864,6 +864,9 @@ class Session:
         if not self.persona:
             return
         fp = self.fingerprint
+        from .coherence import enforce
+        for issue in enforce(fp, name=self.name):
+            _log.warning("session '%s': coherence %s: %s", self.name, issue.layer, issue.message)
         if self._spoof:
             from .stealth import apply_stealth
             seed = int.from_bytes(self.name.encode()[:4].ljust(4, b'\0'), 'big')
