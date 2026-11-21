@@ -88,6 +88,38 @@ def test_record_use_and_states(reg):
     assert reg.get("p1")["note"] == "burned"
 
 
+def test_record_use_auto_advances_the_pipeline(reg):
+    reg.register("p1", program_id="acme", role="a", state="fresh")
+    assert reg.record_use("p1")["state"] == "warming"       # fresh -> warming on first session
+    reg.record_use("p1")
+    assert reg.record_use("p1")["state"] == "aging"         # 3 sessions -> aging
+    assert reg.record_use("p1", advance=False)["state"] == "aging"  # opting out leaves state alone
+
+
+def test_advance_promotes_to_ready_past_the_age_gate(reg):
+    reg.register("p1", program_id="acme", role="a", state="aging")
+    created = reg.get("p1")["created_at"]
+    for _ in range(5):
+        reg.record_use("p1", advance=False)
+    assert reg.advance("p1", now=created + 72 * 3600)["state"] == "ready"
+
+
+def test_record_use_retires_a_burned_profile(reg):
+    reg.register("p1", program_id="acme", role="a", state="ready")
+    for _ in range(4):
+        reg.record_use("p1", challenged=True)
+    assert reg.get("p1")["state"] == "retired"
+
+
+def test_advance_all_sweeps_and_leaves_assigned_alone(reg):
+    reg.register("p1", program_id="acme", role="a", state="fresh")
+    reg.register("p2", program_id="acme", role="b", state="assigned")
+    reg.record_use("p1", advance=False)
+    moved = {m["profile_name"]: (m["from"], m["to"]) for m in reg.advance_all()}
+    assert moved["p1"] == ("fresh", "warming")
+    assert "p2" not in moved
+
+
 def test_ls_filters(reg):
     reg.register("p1", program_id="acme", role="a", state="ready")
     reg.register("p2", program_id="acme", role="b", state="warming")

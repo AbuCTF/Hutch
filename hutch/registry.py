@@ -14,6 +14,8 @@ import sqlite3
 import threading
 import time
 
+from . import warm
+
 _DEFAULT_DB = os.environ.get("HUTCH_REGISTRY_DB") or os.path.expanduser("~/.hutch/registry.sqlite")
 _PROFILES_DIR = os.environ.get("HUTCH_BASE_DIR") or os.path.expanduser("~/.hutch/profiles")
 _META_FILE = "hutch_meta.json"
@@ -171,8 +173,9 @@ class Registry:
             self._db.commit()
         return self.get(profile_name)
 
-    def record_use(self, profile_name, *, challenged=False):
-        """One session's outcome — bumps the usage count and, if a challenge showed, the challenge count."""
+    def record_use(self, profile_name, *, challenged=False, advance=True):
+        """One session's outcome — bumps the usage count and, if a challenge showed, the challenge count,
+        then (by default) re-evaluates the profile's lifecycle state against the warm policy."""
         now = int(time.time())
         with self._lock:
             self._db.execute(
@@ -180,7 +183,32 @@ class Registry:
                 "challenge_count=challenge_count+? WHERE profile_name=?",
                 (now, 1 if challenged else 0, profile_name))
             self._db.commit()
+        return self.advance(profile_name, now) if advance else self.get(profile_name)
+
+    def advance(self, profile_name, now=None):
+        """Re-evaluate one profile's state against the warm policy; persist and return it if it moved."""
+        now = int(now if now is not None else time.time())
+        with self._lock:
+            row = self.get(profile_name)
+            if not row:
+                return None
+            target = warm.next_state(row, now)
+            if target != row["state"]:
+                self._db.execute("UPDATE profile_assignments SET state=? WHERE profile_name=?",
+                                 (target, profile_name))
+                self._db.commit()
         return self.get(profile_name)
+
+    def advance_all(self, now=None, program_id=None):
+        """Sweep every profile (optionally one program) through the policy; return each one that moved."""
+        now = int(now if now is not None else time.time())
+        moved = []
+        for r in self.ls(program_id=program_id):
+            target = warm.next_state(r, now)
+            if target != r["state"]:
+                self.set_state(r["profile_name"], target)
+                moved.append({"profile_name": r["profile_name"], "from": r["state"], "to": target})
+        return moved
 
     def set_state(self, profile_name, state):
         with self._lock:
