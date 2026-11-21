@@ -13,7 +13,59 @@ that a profile is being doubted, so it cools, then retires, long before it can b
 Pure and clock-injected — no browser, no network, no new dependency.
 """
 
+import random
+from urllib.parse import urlsplit
+
 HOUR = 3600
+
+TIERS = ("organic", "snapshot")
+
+# benign, high-traffic, non-target sites a warming profile visits to build real history and bank
+# cookies / cf_clearance on its pinned proxy. Deliberately generic and never a program target: warming
+# traffic must never touch an in-scope host — that is the assigned session's job once the profile is ready.
+_WARM_SITES = (
+    "https://en.wikipedia.org/wiki/Special:Random",
+    "https://www.reddit.com/",
+    "https://news.ycombinator.com/",
+    "https://www.youtube.com/",
+    "https://www.bing.com/",
+    "https://duckduckgo.com/",
+    "https://stackoverflow.com/",
+    "https://www.nytimes.com/",
+    "https://www.theguardian.com/international",
+    "https://www.imdb.com/",
+    "https://weather.com/",
+    "https://www.goodreads.com/",
+)
+
+# dwell (seconds) and scroll behaviour per tier. organic reads like a person settling in to read; snapshot
+# just seeds trust tokens fast. A profile stays in ONE tier for life — mixing the two is an incoherent
+# history (a human who browses deep one day and bounce-loads the next looks like two different people).
+_TIER = {
+    "organic": {"dwell": (25, 120), "scroll": True, "steps": 8},
+    "snapshot": {"dwell": (3, 9), "scroll": False, "steps": 4},
+}
+
+
+def plan(seed, tier="organic", steps=None, exclude_hosts=()):
+    """A deterministic warming itinerary for a profile: benign sites with human dwell/scroll, seeded by the
+    profile so a given profile warms the same way each run. ``exclude_hosts`` drops any site on those hosts
+    so warming can never touch a program's target. Returns a list of {url, dwell, scroll, tier} steps."""
+    if tier not in TIERS:
+        raise ValueError(f"unknown warming tier {tier!r}, expected one of {', '.join(TIERS)}")
+    cfg = _TIER[tier]
+    excluded = {h.lower().lstrip(".") for h in exclude_hosts}
+    pool = [s for s in _WARM_SITES
+            if not any(urlsplit(s).hostname.endswith(h) for h in excluded)]
+    if not pool:
+        raise ValueError("no warming sites left after exclusions")
+    rng = random.Random(seed)
+    rng.shuffle(pool)
+    lo, hi = cfg["dwell"]
+    n = steps or cfg["steps"]
+    return [{"url": pool[i % len(pool)], "dwell": rng.randint(lo, hi),
+             "scroll": cfg["scroll"], "tier": tier} for i in range(n)]
+
 
 # the warming pipeline's thresholds — benign sessions and wall-clock age a profile accrues before it is
 # trusted to serve. Deliberately conservative: a profile that ages too fast reads as a script, not a human.

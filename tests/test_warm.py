@@ -59,3 +59,30 @@ def test_warmth_score_orders_profiles():
 def test_challenge_rate_zero_when_never_run():
     assert warm.challenge_rate(row("fresh", sessions=0, challenges=0)) == 0.0
     assert warm.challenge_rate(row("ready", sessions=4, challenges=1)) == 0.25
+
+
+def test_plan_is_deterministic_per_seed():
+    assert warm.plan("acme-a1") == warm.plan("acme-a1")
+    assert warm.plan("acme-a1") != warm.plan("acme-b2")
+
+
+def test_plan_tiers_differ_in_pace_and_depth():
+    organic = warm.plan("s", tier="organic")
+    snapshot = warm.plan("s", tier="snapshot")
+    assert len(organic) == 8 and len(snapshot) == 4
+    assert all(step["scroll"] for step in organic)
+    assert all(not step["scroll"] for step in snapshot)
+    assert max(s["dwell"] for s in snapshot) < min(s["dwell"] for s in organic)
+
+
+def test_plan_never_visits_an_excluded_target():
+    itinerary = warm.plan("s", steps=12, exclude_hosts=["reddit.com", "youtube.com"])
+    hosts = {__import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(s["url"]).hostname
+             for s in itinerary}
+    assert not any(h.endswith("reddit.com") or h.endswith("youtube.com") for h in hosts)
+
+
+def test_plan_rejects_unknown_tier():
+    import pytest
+    with pytest.raises(ValueError):
+        warm.plan("s", tier="turbo")
